@@ -1,0 +1,142 @@
+solid icosahedron
+  facet normal -0.577350269 0.577350269 0.577350269
+    outer loop
+      vertex -1 1.61803399 0
+      vertex -1.61803399 0 1
+      vertex 0 1 1.61803399
+    endloop
+  endfacet
+  facet normal -0 0.934172359 0.35682209
+    outer loop
+      vertex -1 1.61803399 0
+      vertex 0 1 1.61803399
+      vertex 1 1.61803399 0
+    endloop
+  endfacet
+  facet normal 0 0.934172359 -0.35682209
+    outer loop
+      vertex -1 1.61803399 0
+      vertex 1 1.61803399 0
+      vertex 0 1 -1.61803399
+    endloop
+  endfacet
+  facet normal -0.577350269 0.577350269 -0.577350269
+    outer loop
+      vertex -1 1.61803399 0
+      vertex 0 1 -1.61803399
+      vertex -1.61803399 0 -1
+    endloop
+  endfacet
+  facet normal -0.934172359 0.35682209 0
+    outer loop
+      vertex -1 1.61803399 0
+      vertex -1.61803399 0 -1
+      vertex -1.61803399 0 1
+    endloop
+  endfacet
+  facet normal 0.577350269 0.577350269 0.577350269
+    outer loop
+      vertex 1 1.61803399 0
+      vertex 0 1 1.61803399
+      vertex 1.61803399 0 1
+    endloop
+  endfacet
+  facet normal -0.35682209 0 0.934172359
+    outer loop
+      vertex 0 1 1.61803399
+      vertex -1.61803399 0 1
+      vertex 0 -1 1.61803399
+    endloop
+  endfacet
+  facet normal -0.934172359 -0.35682209 -0
+    outer loop
+      vertex -1.61803399 0 1
+      vertex -1.61803399 0 -1
+      vertex -1 -1.61803399 0
+    endloop
+  endfacet
+  facet normal -0.35682209 0 -0.934172359
+    outer loop
+      vertex -1.61803399 0 -1
+      vertex 0 1 -1.61803399
+      vertex 0 -1 -1.61803399
+    endloop
+  endfacet
+  facet normal 0.577350269 0.577350269 -0.577350269
+    outer loop
+      vertex 0 1 -1.61803399
+      vertex 1 1.61803399 0
+      vertex 1.61803399 0 -1
+    endloop
+  endfacet
+  facet normal 0.577350269 -0.577350269 0.577350269
+    outer loop
+      vertex 1 -1.61803399 0
+      vertex 1.61803399 0 1
+      vertex 0 -1 1.61803399
+    endloop
+  endfacet
+  facet normal 0 -0.934172359 0.35682209
+    outer loop
+      vertex 1 -1.61803399 0
+      vertex 0 -1 1.61803399
+      vertex -1 -1.61803399 0
+    endloop
+  endfacet
+  facet normal -0 -0.934172359 -0.35682209
+    outer loop
+      vertex 1 -1.61803399 0
+      vertex -1 -1.61803399 0
+      vertex 0 -1 -1.61803399
+    endloop
+  endfacet
+  facet normal 0.577350269 -0.577350269 -0.577350269
+    outer loop
+      vertex 1 -1.61803399 0
+      vertex 0 -1 -1.61803399
+      vertex 1.61803399 0 -1
+    endloop
+  endfacet
+  facet normal 0.934172359 -0.35682209 0
+    outer loop
+      vertex 1 -1.61803399 0
+      vertex 1.61803399 0 -1
+      vertex 1.61803399 0 1
+    endloop
+  endfacet
+  facet normal 0.35682209 -0 0.934172359
+    outer loop
+      vertex 0 -1 1.61803399
+      vertex 1.61803399 0 1
+      vertex 0 1 1.61803399
+    endloop
+  endfacet
+  facet normal -0.577350269 -0.577350269 0.577350269
+    outer loop
+      vertex -1 -1.61803399 0
+      vertex 0 -1 1.61803399
+      vertex -1.61803399 0 1
+    endloop
+  endfacet
+  facet normal -0.577350269 -0.577350269 -0.577350269
+    outer loop
+      vertex 0 -1 -1.61803399
+      vertex -1 -1.61803399 0
+      vertex -1.61803399 0 -1
+    endloop
+  endfacet
+  facet normal 0.35682209 0 -0.934172359
+    outer loop
+      vertex 1.61803399 0 -1
+      vertex 0 -1 -1.61803399
+      vertex 0 1 -1.61803399
+    endloop
+  endfacet
+  facet normal 0.934172359 0.35682209 0
+    outer loop
+      vertex 1.61803399 0 1
+      vertex 1.61803399 0 -1
+      vertex 1 1.61803399 0
+    endloop
+  endfacet
+endsolid icosahedron

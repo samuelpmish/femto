@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>femto — lid-driven cavity</title>
+<link rel="stylesheet" href="viewer.css">
+<!-- The modules are multithreaded (femto's thread pool and the sparse solver
+     run on Web Workers), which needs SharedArrayBuffer, which browsers only
+     give a cross-origin-isolated page.  Where the host cannot send the
+     COOP/COEP headers itself (GitHub Pages), this service worker adds them and
+     reloads the page once; it exits early when the server already does.  Keep
+     it same-origin and at the END of <head>. -->
+<script src="enable-threads.js"></script>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+<div id="loading">loading femto.wasm …</div>
+
+<div id="panel" hidden>
+  <h1>lid-driven cavity <span>— 2D Navier-Stokes</span></h1>
+
+  <div class="row"><label>lid speed <output id="lidSpeed_out"></output> m/s</label>
+    <input type="range" id="lidSpeed" min="0.2" max="4" step="0.2" value="1"></div>
+  <div class="row"><label>Reynolds number <output id="Re_out"></output></label>
+    <input type="range" id="Re" min="50" max="1000" step="50" value="100"></div>
+  <div class="row"><label>elements per side <output id="n_out"></output></label>
+    <input type="range" id="n" min="16" max="48" step="4" value="32"></div>
+
+  <div class="block">
+    <div class="button-row"><button id="btn_solve">solve</button></div>
+    <label>color by</label>
+    <div class="button-row">
+      <button id="btn_speed" class="active">speed</button>
+      <button id="btn_pressure">pressure</button>
+    </div>
+    <label class="check"><input type="checkbox" id="show_arrows" checked> velocity arrows</label>
+    <label class="check"><input type="checkbox" id="show_edges"> element edges</label>
+  </div>
+
+  <div class="info" id="stats"></div>
+  <canvas class="chart" id="chart"></canvas>
+  <div class="info" id="chart_note"></div>
+  <canvas class="chart" id="convergence"></canvas>
+  <div class="info" id="convergence_note"></div>
+</div>
+
+<div id="legend"><span class="label"></span><span class="min"></span><div class="bar"></div><span class="max"></span></div>
+<div id="hint">drag&nbsp;to&nbsp;pan&nbsp;· scroll&nbsp;or&nbsp;pinch&nbsp;to&nbsp;zoom</div>
+
+<script src="viewer.js"></script>
+<script src="femto_examples.js"></script>
+<script>
+"use strict";
+
+// Q2 velocity, Q1 pressure, and the steady equations solved directly:
+// Newton's method on the coupled velocity-pressure system, with the
+// Reynolds number raised 4x a stage so each solve starts near its answer.
+// The centerline profile matches the Ghia, Ghia & Shin (1982) benchmark,
+// drawn as dots whenever the Reynolds number is one of the three they
+// tabulated.
+
+// Ghia, Ghia & Shin (1982), table 1: u_x along the vertical centerline
+const GHIA_Y = [0, 0.0547, 0.0625, 0.0703, 0.1016, 0.1719, 0.2813, 0.4531, 0.5, 0.6172, 0.7344, 0.8516, 0.9531, 0.9609, 0.9688, 0.9766, 1];
+const GHIA_U = {
+  100: [0, -0.03717, -0.04192, -0.04775, -0.06434, -0.10150, -0.15662, -0.21090, -0.20581, -0.13641, 0.00332, 0.23151, 0.68717, 0.73722, 0.78871, 0.84123, 1],
+  400: [0, -0.08186, -0.09266, -0.10338, -0.14612, -0.24299, -0.32726, -0.17119, -0.11477, 0.02135, 0.16256, 0.29093, 0.55892, 0.61756, 0.68439, 0.75837, 1],
+  1000: [0, -0.18109, -0.20196, -0.22220, -0.29730, -0.38289, -0.27805, -0.10648, -0.06080, 0.05702, 0.18719, 0.33304, 0.46604, 0.51117, 0.57492, 0.65928, 1]
+};
+
+const L = 1.0;
+const viewer = new Viewer(document.getElementById("canvas"), "2d");
+let wasm = null, sim = null, geometry = null, layer = null, arrowLayer = null;
+const arrowLines = new Lines(new Float32Array(0));
+let stride = 1, solved = false;
+
+const values = sliders(() => rebuild(), { lidSpeed: v => v.toFixed(1) });
+const colorBy = buttonGroup(["btn_speed", "btn_pressure"], () => refresh());
+document.getElementById("show_arrows").addEventListener("change", e => { arrowLayer.visible = e.target.checked; });
+document.getElementById("show_edges").addEventListener("change", e => { layer.edges = e.target.checked; });
+document.getElementById("btn_solve").addEventListener("click", () => solve());
+
+function refresh(ms) {
+  const q = values();
+  const u = sim.velocity();
+  if (colorBy() === 0) {
+    geometry.vertexScalar(u, 2, "norm");
+    legend(viewer, 0, q.lidSpeed, "speed", v => v.toFixed(2) + " m/s");
+  } else {
+    const p = sim.pressure();
+    geometry.vertexScalar(p);
+    const [lo, hi] = geometry.range();
+    legend(viewer, lo, hi, "pressure", v => v.toPrecision(2) + " m²/s²");
+  }
+
+  // arrows at every stride-th vertex, clipped to one cell in length
+  const px = [], pv = [];
+  const nv = Math.round(Math.sqrt(geometry.nodes.length / 2));
+  for (let j = 0; j < nv; j += stride) {
+    for (let i = 0; i < nv; i += stride) {
+      const v = j * nv + i;
+      px.push(geometry.nodes[2 * v], geometry.nodes[2 * v + 1]);
+      pv.push(u[2 * v], u[2 * v + 1]);
+    }
+  }
+  const span = stride * L / q.n;
+  arrowLines.set(arrows(new Float64Array(px), new Float64Array(pv), 2, m => 0.9 * span * Math.min(1, m / q.lidSpeed)));
+
+  const head = `Re <b>${sim.reynolds().toFixed(0)}</b> · ν = ${(q.lidSpeed * L / q.Re).toPrecision(3)} m²/s\n` +
+               `${(geometry.nodes.length / 2).toLocaleString()} vertices · ${(2 * (2 * q.n + 1) ** 2 + (q.n + 1) ** 2).toLocaleString()} unknowns\n`;
+  document.getElementById("stats").innerHTML = solved
+    ? head + `<b>${sim.iterations()} Newton steps</b> to |R| / |R₀| = ${sim.residual().toExponential(1)} in ${(ms / 1000).toFixed(1)} s`
+    : head + `at rest: press solve`;
+
+  // the centerline profile, against the benchmark when the Reynolds number matches
+  const line = sim.centerline(), y = [], ux = [];
+  for (let k = 0; k < line.length; k += 2) { y.push(line[k]); ux.push(line[k + 1] / q.lidSpeed); }
+  const series = [{ x: ux, y, color: "#e8a838" }];
+  const reference = GHIA_U[q.Re];
+  if (reference) { series.push({ x: reference, y: GHIA_Y, color: "#7fd4ff", dots: true }); }
+  chart(document.getElementById("chart"), series, { xlabel: "u / U", ylabel: "y / L", yrange: [0, 1] });
+  document.getElementById("chart_note").textContent = reference
+    ? "dots: Ghia, Ghia & Shin (1982) at this Reynolds number"
+    : "no benchmark at this Reynolds number (set Re to 100, 400 or 1000)";
+
+  // the Newton residual per step: each stage of the Reynolds-number
+  // continuation converges quadratically, then the next stage kicks it up
+  const history = solved ? Array.from(sim.history()) : [];
+  const steps = history.map((_, k) => k + 1), logr = history.map(r => Math.log10(Math.max(r, 1e-16)));
+  chart(document.getElementById("convergence"), [{ x: steps, y: logr, color: "#e8a838" }],
+        { xlabel: "Newton step", ylabel: "log₁₀ |R| / |R₀|", xrange: [0, Math.max(steps.length, 1) + 1], yrange: [-16, 0] });
+  document.getElementById("convergence_note").textContent = solved
+    ? `Newton residual per step: Re raised 4× a stage from 100, the last stage to tolerance`
+    : "Newton residual per step, once solved";
+}
+
+function rebuild() {
+  const q = values();
+  solved = false;
+  if (sim) sim.delete();
+  sim = new wasm.LidDrivenCavity({ L, n: q.n, lidSpeed: q.lidSpeed, viscosity: q.lidSpeed * L / q.Re, tolerance: 1e-8 });
+
+  const nodes = sim.nodes(), cells = sim.cells();
+  const { facets, cellIds } = cellFacets(cells, 4);
+  viewer.clear();
+  geometry = new Geometry(nodes, 2, facets, cellIds);
+  layer = viewer.add(geometry, { scalar: true, edges: document.getElementById("show_edges").checked, edgeColor: [0.16, 0.17, 0.2] });
+  arrowLayer = viewer.add(arrowLines, { color: [0.95, 0.95, 0.98], visible: document.getElementById("show_arrows").checked });
+  stride = Math.max(1, Math.round(q.n / 24));
+  viewer.fit(geometry.positions, 1.08);
+  refresh();
+}
+
+function solve() {
+  const button = document.getElementById("btn_solve");
+  button.disabled = true;
+  button.textContent = "solving…";
+  setTimeout(() => {
+    const t0 = performance.now();
+    sim.solve();
+    solved = true;
+    refresh(performance.now() - t0);
+    button.disabled = false;
+    button.textContent = "solve";
+  }, 30);
+}
+
+createFemtoExamples().then(module => {
+  wasm = module;
+  document.getElementById("loading").remove();
+  document.getElementById("panel").hidden = false;
+  rebuild();
+  viewer.start();
+}).catch(reportLoadFailure);
+</script>
+</body>
+</html>

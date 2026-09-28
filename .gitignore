@@ -1,0 +1,14 @@
+**.so
+**.swp
+**.DS_Store
+dependencies/install/**
+dependencies/build**
+hidden/**
+build/**
+build-web/**
+build-web-mt/**
+python/femto.egg-info/**
+python/dist/**
+python/build/**
+python/femto/__pycache__/**
+.venv

@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>femto — coffee mug modes</title>
+<link rel="stylesheet" href="viewer.css">
+<!-- The modules are multithreaded (femto's thread pool and the sparse solver
+     run on Web Workers), which needs SharedArrayBuffer, which browsers only
+     give a cross-origin-isolated page.  Where the host cannot send the
+     COOP/COEP headers itself (GitHub Pages), this service worker adds them and
+     reloads the page once; it exits early when the server already does.  Keep
+     it same-origin and at the END of <head>. -->
+<script src="enable-threads.js"></script>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+<div id="loading">loading femto.wasm …</div>
+
+<div id="panel" hidden>
+  <h1>coffee mug <span>— 3D modal analysis</span></h1>
+
+  <div class="row"><label>base radius <output id="baseRadius_out"></output> mm</label>
+    <input type="range" id="baseRadius" min="20" max="50" step="1" value="35"></div>
+  <div class="row"><label>rim radius <output id="rimRadius_out"></output> mm</label>
+    <input type="range" id="rimRadius" min="20" max="55" step="1" value="40"></div>
+  <div class="row"><label>height <output id="height_out"></output> mm</label>
+    <input type="range" id="height" min="50" max="140" step="1" value="95"></div>
+  <div class="row"><label>wall thickness <output id="thickness_out"></output> mm</label>
+    <input type="range" id="thickness" min="3" max="8" step="0.5" value="5"></div>
+  <div class="row"><label>handles <output id="handles_out"></output></label>
+    <input type="range" id="handles" min="0" max="4" step="1" value="1"></div>
+
+  <div class="block">
+    <label>material</label>
+    <div class="button-row">
+      <button id="btn_ceramic" class="active">ceramic</button>
+      <button id="btn_glass">glass</button>
+      <button id="btn_steel">steel</button>
+    </div>
+  </div>
+
+  <div class="block">
+    <div class="row"><label>modes to solve for <output id="numModes_out"></output></label>
+      <input type="range" id="numModes" min="3" max="10" step="1" value="6"></div>
+    <div class="row"><label>show mode <output id="mode_out"></output></label>
+      <input type="range" id="mode" min="1" max="6" step="1" value="1"></div>
+    <div class="row"><label>amplitude <output id="amplitude_out"></output>%</label>
+      <input type="range" id="amplitude" min="0" max="15" step="1" value="6"></div>
+    <label class="check"><input type="checkbox" id="show_edges" checked> element edges</label>
+  </div>
+
+  <div class="info" id="stats"></div>
+  <div class="warn" id="warning"></div>
+</div>
+
+<div id="legend"><span class="label"></span><span class="min"></span><div class="bar"></div><span class="max"></span></div>
+<div id="hint">drag&nbsp;to&nbsp;orbit&nbsp;· shift-drag&nbsp;or&nbsp;two-finger&nbsp;drag&nbsp;to&nbsp;pan&nbsp;· scroll&nbsp;or&nbsp;pinch&nbsp;to&nbsp;zoom</div>
+
+<script src="viewer.js"></script>
+<script src="femto_examples.js"></script>
+<script>
+"use strict";
+
+// Free vibration of the mug: the mass and stiffness matrices of the hex mesh
+// and a shift-inverted Lanczos solve for the lowest modes.  The shown mode is
+// animated about the rest shape and colored by the magnitude of its motion.
+// The mug has no supports, so the six rigid-body modes are shifted away and
+// what remains are the ring and bending modes you hear when you tap it.
+
+const MATERIALS = [
+  { name: "ceramic", rho: 2400, E: 70e9, nu: 0.20 },
+  { name: "glass", rho: 2500, E: 70e9, nu: 0.22 },
+  { name: "steel", rho: 7800, E: 200e9, nu: 0.30 }
+];
+
+const viewer = new Viewer(document.getElementById("canvas"), "3d");
+let wasm = null, sim = null, geometry = null, layer = null;
+let modes = [], frequencies = [], amplitudes = [];
+
+const values = sliders(id => {
+  if (id === "mode" || id === "amplitude") { showMode(); return; }
+  if (id === "numModes") { document.getElementById("mode").max = String(+document.getElementById("numModes").value); }
+  request();
+}, { thickness: v => v.toFixed(1) });
+const material = buttonGroup(["btn_ceramic", "btn_glass", "btn_steel"], () => request());
+document.getElementById("show_edges").addEventListener("change", e => { if (layer) layer.edges = e.target.checked; });
+
+// the feasibility checks inside Mesh::coffee_mug, mirrored so an impossible
+// slider combination is reported instead of aborting the module
+function infeasible(q) {
+  const t = q.thickness, h = 0.75 * t;
+  if (q.baseRadius < 2 * t || q.rimRadius < 2 * t) return "radii must be at least 2 × the wall thickness";
+  if (q.height < 2.5 * t) return "height must be at least 2.5 × the wall thickness";
+  if (q.handles > 0) {
+    const ringNodes = 4 * Math.max(1, Math.round((q.baseRadius - t) / h));
+    const nz = Math.max(2, Math.round((q.height - t) / h));
+    const hz = (q.height - t) / nz;
+    const sectorW = 2 * Math.PI * 0.5 * (q.baseRadius + q.rimRadius) / ringNodes;
+    const nb = Math.max(1, Math.round(1.5 * t / sectorW));
+    const na = Math.min(6, Math.max(2, Math.round(nb * sectorW / hz)));
+    if (ringNodes < q.handles * (nb + 2)) return "radius too small for this many handles";
+    const near = z => Math.round((z - t) / hz - 0.5 * na);
+    const lo = Math.max(1, near(0.25 * q.height)), hi = Math.min(nz - na - 1, near(0.80 * q.height));
+    if (lo + na + 1 > hi) return "height too small for handles (about 7 × thickness)";
+  }
+  return null;
+}
+
+function showMode() {
+  if (!modes.length) return;
+  const q = values();
+  const k = Math.min(modes.length, Math.round(q.mode)) - 1;
+  geometry.vertexScalar(modes[k], 3, "norm");
+  const [, hi] = geometry.range();
+  legend(viewer, 0, hi, `mode ${k + 1}`, v => v.toPrecision(2));
+  const f = frequencies[k];
+  document.getElementById("stats").innerHTML =
+    `${sim.cells().length / 8} hexahedra · ${geometry.nodes.length / 3} vertices\n` +
+    `mode ${k + 1} at <b>${f < 1000 ? f.toFixed(0) + " Hz" : (f / 1000).toFixed(2) + " kHz"}</b>\n` +
+    `all modes: ${frequencies.map(v => (v / 1000).toFixed(2)).join(", ")} kHz\n` +
+    `${sim.iterations()} Lanczos iterations · ${sim.solveMilliseconds().toFixed(0)} ms`;
+}
+
+const rerun = runner(() => {
+  const q = values();
+  const problem = infeasible(q);
+  document.getElementById("warning").textContent = problem ? "⚠ " + problem : "";
+  if (problem) return;
+
+  const mat = MATERIALS[material()];
+  if (sim) sim.delete();
+  const mm = 1e-3;
+  sim = new wasm.CoffeeCupModal({ baseRadius: q.baseRadius * mm, rimRadius: q.rimRadius * mm, height: q.height * mm,
+                                  thickness: q.thickness * mm, handles: q.handles, p: 1,
+                                  rho: mat.rho, E: mat.E, nu: mat.nu, numModes: q.numModes });
+  sim.solve();
+
+  const nodes = sim.nodes(), cells = sim.cells();
+  frequencies = Array.from(sim.frequencies());
+  modes = frequencies.map((_, k) => sim.mode(k));
+  amplitudes = modes.map(m => {
+    let peak = 0;
+    for (const v of m) peak = Math.max(peak, Math.abs(v));
+    return peak > 0 ? q.height * mm / peak : 0;
+  });
+
+  viewer.clear();
+  const { facets, cellIds } = cellBoundary(cells, 8);
+  geometry = new Geometry(nodes, 3, facets, cellIds);
+  layer = viewer.add(geometry, { scalar: true, edges: document.getElementById("show_edges").checked, edgeColor: [0.12, 0.13, 0.16] });
+  viewer.fit(geometry.positions);
+  showMode();
+});
+
+function request() {
+  document.getElementById("stats").textContent = "assembling and solving the eigenproblem…";
+  rerun();
+}
+
+createFemtoExamples().then(module => {
+  wasm = module;
+  document.getElementById("loading").remove();
+  document.getElementById("panel").hidden = false;
+  request();
+  viewer.start(t => {
+    if (!modes.length) return;
+    const q = values();
+    const k = Math.min(modes.length, Math.round(q.mode)) - 1;
+    geometry.deform(modes[k], 0.01 * q.amplitude * amplitudes[k] * Math.sin(2 * Math.PI * t / 1500));
+  });
+}).catch(reportLoadFailure);
+</script>
+</body>
+</html>

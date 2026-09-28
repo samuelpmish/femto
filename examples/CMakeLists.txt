@@ -1,0 +1,5 @@
+if (EMSCRIPTEN)
+  add_subdirectory(html)
+else()
+  add_subdirectory(cpp)
+endif()

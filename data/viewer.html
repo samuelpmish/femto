@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>femto viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1c20; }
+  #gl { width: 100%; height: 100%; display: block; }
+  #hud {
+    position: absolute; top: 12px; left: 12px; padding: 10px 14px;
+    background: rgba(20, 22, 26, 0.85); border: 1px solid #3a3f47; border-radius: 6px;
+    color: #d6d9de; font: 13px/1.6 system-ui, sans-serif; user-select: none; min-width: 220px;
+  }
+  #hud .title { font-weight: 600; color: #fff; margin-bottom: 2px; }
+  #hud .dim { color: #8a919c; }
+  #hud input[type=number] {
+    width: 70px; background: #23262c; color: #d6d9de;
+    border: 1px solid #3a3f47; border-radius: 3px; padding: 1px 4px;
+  }
+  #colorbar { width: 200px; height: 12px; border-radius: 3px; display: block; margin-top: 6px; }
+  #range { display: flex; justify-content: space-between; color: #8a919c; font-size: 11px; }
+  #help { color: #8a919c; font-size: 11px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="hud">
+  <div class="title">femto viewer</div>
+  <div id="status" class="dim">connecting&hellip;</div>
+  <div id="fieldinfo"></div>
+  <div id="defrow" style="display:none">
+    deformation scale <input id="defscale" type="number" value="1" step="0.5">
+  </div>
+  <div>
+    subdivision <input id="subdiv" type="number" value="4" min="1" max="16" step="1">
+  </div>
+  <canvas id="colorbar" width="256" height="1" style="display:none"></canvas>
+  <div id="range"></div>
+  <div id="help">drag: pan / orbit &middot; wheel: zoom &middot; &larr;/&rarr;: timestep</div>
+</div>
+<script>
+"use strict";
+
+//////////////////////////// finite element bases /////////////////////////////
+
+// the server ships high-order node values and element connectivity verbatim,
+// and this client re-evaluates the same shape functions femto uses, on a
+// reference-element sample lattice, to tessellate each element. these
+// functions must match the definitions in
+//   inc/femto/interpolation.hpp             (Lobatto Lagrange basis, [0,1])
+//   inc/femto/elements/h1_quadrilateral.hpp (tensor product, x fastest)
+//   inc/femto/elements/h1_triangle.hpp      (explicit polynomials)
+// (the DG elements share the H1 reference nodes and shape functions --
+// they only differ in the global numbering, which the server resolves)
+
+function lobatto(n, i, x) {
+  if (n === 1) { return 1.0; }
+  if (n === 2) { return (i === 0) ? 1.0 - x : x; }
+  if (n === 3) {
+    if (i === 0) return (-1.0 + x) * (-1.0 + 2.0 * x);
+    if (i === 1) return -4.0 * (-1.0 + x) * x;
+    return x * (-1.0 + 2.0 * x);
+  }
+  if (n === 4) {
+    const s5 = 2.23606797749978981;
+    if (i === 0) return -(-1.0 + x) * (1.0 + 5.0 * (-1.0 + x) * x);
+    if (i === 1) return -0.5 * s5 * (5.0 + s5 - 10.0 * x) * (-1.0 + x) * x;
+    if (i === 2) return -0.5 * s5 * (-1.0 + x) * x * (-5.0 + s5 + 10.0 * x);
+    return x * (1.0 + 5.0 * (-1.0 + x) * x);
+  }
+  return 0.0;
+}
+
+function quadShape(p, i, x, y) {
+  return lobatto(p + 1, i % (p + 1), x) * lobatto(p + 1, Math.floor(i / (p + 1)), y);
+}
+
+function triShape(p, i, x, y) {
+  if (p === 0) { return 1.0; }
+  if (p === 1) {
+    if (i === 0) return 1.0 - x - y;
+    if (i === 1) return x;
+    return y;
+  }
+  if (p === 2) {
+    if (i === 0) return (-1 + x + y) * (-1 + 2 * x + 2 * y);
+    if (i === 1) return -4 * x * (-1 + x + y);
+    if (i === 2) return x * (-1 + 2 * x);
+    if (i === 3) return -4 * y * (-1 + x + y);
+    if (i === 4) return 4 * x * y;
+    return y * (-1 + 2 * y);
+  }
+  if (p === 3) {
+    const s5 = 2.23606797749978981;
+    if (i === 0) return -((-1 + x + y) * (1 + 5 * x * x + 5 * (-1 + y) * y + x * (-5 + 11 * y)));
+    if (i === 1) return (5 * x * (-1 + x + y) * (-1 - s5 + 2 * s5 * x + (3 + s5) * y)) / 2.0;
+    if (i === 2) return (-5 * x * (-1 + x + y) * (1 - s5 + 2 * s5 * x + (-3 + s5) * y)) / 2.0;
+    if (i === 3) return x * (1 + 5 * x * x + y - y * y - x * (5 + y));
+    if (i === 4) return (5 * y * (-1 + x + y) * (-1 - s5 + (3 + s5) * x + 2 * s5 * y)) / 2.0;
+    if (i === 5) return -27 * x * y * (-1 + x + y);
+    if (i === 6) return (5 * x * y * (-2 + (3 + s5) * x - (-3 + s5) * y)) / 2.0;
+    if (i === 7) return (5 * y * (-1 + x + y) * (5 - 3 * s5 + 2 * (-5 + 2 * s5) * x + 5 * (-1 + s5) * y)) / (-5 + s5);
+    if (i === 8) return (-5 * x * y * (2 + (-3 + s5) * x - (3 + s5) * y)) / 2.0;
+    return y * (1 + x - x * x - x * y + 5 * (-1 + y) * y);
+  }
+  return 0.0;
+}
+
+/////////////////////////// reference element lattices ////////////////////////
+
+// sample points, sub-triangles, and boundary edge segments of one element,
+// at subdivision level n (all indices are local to the element's samples)
+
+function quadLattice(n) {
+  const pts = [];
+  for (let j = 0; j <= n; j++)
+    for (let i = 0; i <= n; i++) pts.push([i / n, j / n]);
+
+  const tris = [];
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      const a = j * (n + 1) + i, b = a + 1, c = a + n + 1, d = c + 1;
+      tris.push(a, b, d, a, d, c);
+    }
+  }
+
+  const edges = [];
+  for (let i = 0; i < n; i++) {
+    edges.push(i, i + 1);                                    // bottom
+    edges.push(n * (n + 1) + i, n * (n + 1) + i + 1);        // top
+    edges.push(i * (n + 1), (i + 1) * (n + 1));              // left
+    edges.push(i * (n + 1) + n, (i + 1) * (n + 1) + n);      // right
+  }
+  return { pts, tris, edges };
+}
+
+function triLattice(n) {
+  const pts = [], rowStart = [];
+  for (let j = 0, k = 0; j <= n; j++) {
+    rowStart.push(k);
+    for (let i = 0; i <= n - j; i++, k++) pts.push([i / n, j / n]);
+  }
+
+  const tris = [];
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n - j; i++) {
+      const a = rowStart[j] + i, b = a + 1, c = rowStart[j + 1] + i, d = c + 1;
+      tris.push(a, b, c);
+      if (i < n - j - 1) tris.push(b, d, c);
+    }
+  }
+
+  const edges = [];
+  for (let i = 0; i < n; i++) {
+    edges.push(rowStart[0] + i, rowStart[0] + i + 1);                    // bottom
+    edges.push(rowStart[i], rowStart[i + 1]);                            // left
+    edges.push(rowStart[i] + (n - i), rowStart[i + 1] + (n - i - 1));    // hypotenuse
+  }
+  return { pts, tris, edges };
+}
+
+//////////////////////////////// application state ////////////////////////////
+
+const state = {
+  meshVersion: -1,
+  dim: 0,
+  geoSpace: -1,
+  coords: null,        // Float32Array, xyz per geometry node
+  numElements: 0,
+  spaces: new Map(),   // space id -> {family, degree, numNodes, ntri, nquad, triNodes, quadNodes, triConn, quadConn}
+  fields: [],          // metadata from /state: {name, space, components, min, max}
+  cache: new Map(),    // field index -> {space, components, values: Float32Array}
+  current: -1,         // currently viewed timestep
+  followLatest: true,  // keep showing the newest field as they stream in
+  defScale: 1.0,
+  subdiv: 4,           // tessellation level per element
+  tess: null,
+};
+
+const camera2D = { cx: 0, cy: 0, height: 2 };                     // world height of viewport
+const camera3D = { theta: 0.5, phi: 0.4, dist: 3, target: [0, 0, 0] };
+
+//////////////////////////////////// webgl ////////////////////////////////////
+
+const canvas = document.getElementById("gl");
+const gl = canvas.getContext("webgl2", { antialias: true });
+if (!gl) { document.getElementById("status").textContent = "webgl2 unavailable"; throw new Error("webgl2"); }
+
+const vsSource = `#version 300 es
+  in vec3 aPos;
+  in float aVal;    // color scale value in [0, 1]
+  in vec3 aNrm;
+  uniform mat4 uMVP;
+  out float vVal;
+  out vec3 vNrm;
+  void main() {
+    vVal = aVal;
+    vNrm = aNrm;
+    gl_Position = uMVP * vec4(aPos, 1.0);
+  }`;
+
+const fsSource = `#version 300 es
+  precision highp float;
+  in float vVal;
+  in vec3 vNrm;
+  uniform bool uColormap; // false: flat uColor, true: viridis(vVal)
+  uniform bool uLight;    // two-sided lambert shading (3D only)
+  uniform vec3 uColor;
+  out vec4 color;
+
+  vec3 viridis(float t) {
+    t = clamp(t, 0.0, 1.0);
+    const vec3 c0 = vec3(0.2777, 0.0054, 0.3340);
+    const vec3 c1 = vec3(0.1050, 1.4046, 1.3845);
+    const vec3 c2 = vec3(-0.3308, 0.2148, 0.0950);
+    const vec3 c3 = vec3(-4.6342, -5.7991, -19.3324);
+    const vec3 c4 = vec3(6.2282, 14.1799, 56.6906);
+    const vec3 c5 = vec3(4.7763, -13.7451, -65.3530);
+    const vec3 c6 = vec3(-5.4354, 4.6455, 26.3124);
+    return c0+t*(c1+t*(c2+t*(c3+t*(c4+t*(c5+t*c6)))));
+  }
+
+  void main() {
+    vec3 rgb = uColormap ? viridis(vVal) : uColor;
+    if (uLight) {
+      vec3 n = normalize(vNrm);
+      vec3 l = normalize(vec3(0.4, 0.55, 1.0));
+      float shade = 0.35 + 0.65 * abs(dot(n, l));
+      rgb *= shade;
+    }
+    color = vec4(rgb, 1.0);
+  }`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+
+const program = gl.createProgram();
+gl.attachShader(program, compile(gl.VERTEX_SHADER, vsSource));
+gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fsSource));
+gl.linkProgram(program);
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+gl.useProgram(program);
+
+const loc = {
+  aPos: gl.getAttribLocation(program, "aPos"),
+  aVal: gl.getAttribLocation(program, "aVal"),
+  aNrm: gl.getAttribLocation(program, "aNrm"),
+  uMVP: gl.getUniformLocation(program, "uMVP"),
+  uColormap: gl.getUniformLocation(program, "uColormap"),
+  uLight: gl.getUniformLocation(program, "uLight"),
+  uColor: gl.getUniformLocation(program, "uColor"),
+};
+
+const buffers = {
+  pos: gl.createBuffer(),
+  val: gl.createBuffer(),
+  nrm: gl.createBuffer(),
+  tri: gl.createBuffer(),
+  edge: gl.createBuffer(),
+};
+
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.POLYGON_OFFSET_FILL);
+gl.polygonOffset(1.0, 1.0); // push faces back so the wireframe wins ties
+
+//////////////////////////////// tessellation /////////////////////////////////
+
+// each element gets its own samples (no sharing between neighbors), so
+// discontinuous (DG) fields render with their actual jumps
+
+function buildTess() {
+  const geo = state.spaces.get(state.geoSpace);
+  if (!geo) return;
+
+  const n = state.subdiv;
+  const lt = triLattice(n), lq = quadLattice(n);
+  const St = lt.pts.length, Sq = lq.pts.length;
+  const ntri = geo.ntri, nquad = geo.nquad;
+  const numSamples = ntri * St + nquad * Sq;
+
+  const triIdx = new Uint32Array(ntri * lt.tris.length + nquad * lq.tris.length);
+  const edgeIdx = new Uint32Array(ntri * lt.edges.length + nquad * lq.edges.length);
+  let ti = 0, ei = 0;
+  for (let e = 0; e < ntri; e++) {
+    const base = e * St;
+    for (const s of lt.tris) triIdx[ti++] = base + s;
+    for (const s of lt.edges) edgeIdx[ei++] = base + s;
+  }
+  for (let e = 0; e < nquad; e++) {
+    const base = ntri * St + e * Sq;
+    for (const s of lq.tris) triIdx[ti++] = base + s;
+    for (const s of lq.edges) edgeIdx[ei++] = base + s;
+  }
+
+  state.tess = {
+    lt, lq, St, Sq, ntri, nquad, numSamples, triIdx, edgeIdx,
+    shapes: new Map(),   // space id -> shape matrices at the lattice points
+  };
+
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.tri);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, triIdx, gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.edge);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, edgeIdx, gl.STATIC_DRAW);
+}
+
+// (samples x nodes_per_element) shape function matrices for one space,
+// evaluated at the current tessellation's lattice points
+function tessShapes(spaceId) {
+  const t = state.tess;
+  if (!t.shapes.has(spaceId)) {
+    const sp = state.spaces.get(spaceId);
+    const Nt = new Float64Array(t.St * sp.triNodes);
+    for (let s = 0; s < t.St; s++)
+      for (let k = 0; k < sp.triNodes; k++)
+        Nt[s * sp.triNodes + k] = triShape(sp.degree, k, t.lt.pts[s][0], t.lt.pts[s][1]);
+    const Nq = new Float64Array(t.Sq * sp.quadNodes);
+    for (let s = 0; s < t.Sq; s++)
+      for (let k = 0; k < sp.quadNodes; k++)
+        Nq[s * sp.quadNodes + k] = quadShape(sp.degree, k, t.lq.pts[s][0], t.lq.pts[s][1]);
+    t.shapes.set(spaceId, { tri: Nt, quad: Nq });
+  }
+  return t.shapes.get(spaceId);
+}
+
+// evaluate a field at every tessellation sample:
+//   out[sample * outStride + c] (+)= scale * sum_k N_k(sample) values[node_k * comps + c]
+function interpolate(spaceId, values, comps, out, outStride, scale, accumulate) {
+  const sp = state.spaces.get(spaceId);
+  const t = state.tess;
+  const N = tessShapes(spaceId);
+
+  const nnT = sp.triNodes;
+  for (let e = 0; e < t.ntri; e++) {
+    const conn = e * nnT, base = e * t.St;
+    for (let s = 0; s < t.St; s++) {
+      for (let c = 0; c < comps; c++) {
+        let sum = 0.0;
+        for (let k = 0; k < nnT; k++) {
+          sum += N.tri[s * nnT + k] * values[sp.triConn[conn + k] * comps + c];
+        }
+        const o = (base + s) * outStride + c;
+        out[o] = (accumulate ? out[o] : 0.0) + scale * sum;
+      }
+    }
+  }
+
+  const nnQ = sp.quadNodes;
+  for (let e = 0; e < t.nquad; e++) {
+    const conn = e * nnQ, base = t.ntri * t.St + e * t.Sq;
+    for (let s = 0; s < t.Sq; s++) {
+      for (let c = 0; c < comps; c++) {
+        let sum = 0.0;
+        for (let k = 0; k < nnQ; k++) {
+          sum += N.quad[s * nnQ + k] * values[sp.quadConn[conn + k] * comps + c];
+        }
+        const o = (base + s) * outStride + c;
+        out[o] = (accumulate ? out[o] : 0.0) + scale * sum;
+      }
+    }
+  }
+}
+
+/////////////////////////////// mesh & field data /////////////////////////////
+
+async function fetchState() {
+  try {
+    const meta = await (await fetch("state")).json();
+    document.getElementById("status").textContent =
+      state.dim ? `${state.dim}D mesh, ${state.numElements} elements` : "waiting for mesh…";
+
+    if (meta.mesh_version !== state.meshVersion && meta.mesh_version > 0) {
+      await loadMesh();
+      state.meshVersion = meta.mesh_version;
+      state.cache.clear();
+      state.current = -1;
+      state.followLatest = true;
+    }
+
+    state.fields = meta.fields;
+    if (state.fields.length === 0) {
+      state.current = -1;
+    } else if (state.followLatest || state.current >= state.fields.length) {
+      state.current = state.fields.length - 1;
+    }
+    await applyField();
+  } catch (e) {
+    document.getElementById("status").textContent = "connection lost, retrying…";
+  }
+  setTimeout(fetchState, 1000);
+}
+
+async function getSpace(id) {
+  if (!state.spaces.has(id)) {
+    const raw = await (await fetch("space/" + id)).arrayBuffer();
+    const [family, degree, numNodes, ntri, nquad] = new Uint32Array(raw, 0, 5);
+    const triNodes = ((degree + 1) * (degree + 2)) / 2;
+    const quadNodes = (degree + 1) * (degree + 1);
+    let at = 20;
+    const triConn = new Uint32Array(raw, at, ntri * triNodes); at += ntri * triNodes * 4;
+    const quadConn = new Uint32Array(raw, at, nquad * quadNodes);
+    state.spaces.set(id, { family, degree, numNodes, ntri, nquad, triNodes, quadNodes, triConn, quadConn });
+  }
+  return state.spaces.get(id);
+}
+
+async function loadMesh() {
+  state.spaces.clear();
+  const raw = await (await fetch("mesh")).arrayBuffer();
+  const [dim, geoSpace, numNodes] = new Uint32Array(raw, 0, 3);
+  state.dim = dim;
+  state.geoSpace = geoSpace;
+  state.coords = new Float32Array(raw, 12, numNodes * 3);
+
+  const geo = await getSpace(geoSpace);
+  state.numElements = geo.ntri + geo.nquad;
+
+  buildTess();
+  fitCamera();
+}
+
+async function getField(i) {
+  if (!state.cache.has(i)) {
+    const raw = await (await fetch("field/" + i)).arrayBuffer();
+    const [space, components, numNodes] = new Uint32Array(raw, 0, 3);
+    await getSpace(space);
+    state.cache.set(i, { space, components, values: new Float32Array(raw, 12, numNodes * components) });
+  }
+  return state.cache.get(i);
+}
+
+// rebuild the tessellated positions / color-scale values for the current timestep
+async function applyField() {
+  if (!state.tess) return;
+  const t = state.tess;
+
+  const info = document.getElementById("fieldinfo");
+  const defrow = document.getElementById("defrow");
+  const colorbar = document.getElementById("colorbar");
+  const range = document.getElementById("range");
+
+  const positions = new Float32Array(t.numSamples * 3);
+  interpolate(state.geoSpace, state.coords, 3, positions, 3, 1.0, false);
+
+  if (state.current < 0) {
+    info.textContent = "no fields yet";
+    defrow.style.display = "none";
+    colorbar.style.display = "none";
+    range.textContent = "";
+    uploadGeometry(positions, null);
+    return;
+  }
+
+  const meta = state.fields[state.current];
+  const field = await getField(state.current);
+  const { components, values } = field;
+  const isDisplacement = (components === state.dim);
+
+  if (isDisplacement && state.defScale !== 0.0) {
+    interpolate(field.space, values, components, positions, 3, state.defScale, true);
+  }
+
+  // interpolate the components, then reduce each sample to the color scalar
+  // (the value itself for scalar fields, the magnitude for vector fields)
+  const tmp = new Float32Array(t.numSamples * components);
+  interpolate(field.space, values, components, tmp, components, 1.0, false);
+
+  const scalars = new Float32Array(t.numSamples);
+  let min = Infinity, max = -Infinity;
+  for (let s = 0; s < t.numSamples; s++) {
+    let v;
+    if (components === 1) {
+      v = tmp[s];
+    } else {
+      let normSq = 0;
+      for (let c = 0; c < components; c++) normSq += tmp[s * components + c] ** 2;
+      v = Math.sqrt(normSq);
+    }
+    scalars[s] = v;
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  const span = (max > min) ? (max - min) : 1.0;
+  for (let s = 0; s < t.numSamples; s++) scalars[s] = (scalars[s] - min) / span;
+
+  const sp = state.spaces.get(field.space);
+  info.textContent = `${meta.name}  (${state.current + 1}/${state.fields.length})` +
+                     `  [${sp.family === 1 ? "DG" : "H1"} p=${sp.degree}]` +
+                     (isDisplacement ? " [displacement]" : "");
+  defrow.style.display = isDisplacement ? "" : "none";
+  colorbar.style.display = "";
+  range.innerHTML = `<span>${min.toPrecision(4)}</span>` +
+                    `<span>${components === 1 ? "" : "|" + meta.name + "|"}</span>` +
+                    `<span>${max.toPrecision(4)}</span>`;
+
+  uploadGeometry(positions, scalars);
+}
+
+function uploadGeometry(positions, scalars) {
+  const t = state.tess;
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffers.pos);
+  gl.bufferData(gl.ARRAY_BUFFER, positions, gl.DYNAMIC_DRAW);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffers.val);
+  gl.bufferData(gl.ARRAY_BUFFER, scalars || new Float32Array(t.numSamples), gl.DYNAMIC_DRAW);
+
+  // area-weighted normals of the (possibly deformed) tessellated surface.
+  // samples are per-element, so normals are smooth within each element and
+  // split along element boundaries
+  const normals = new Float32Array(t.numSamples * 3);
+  if (state.dim === 3) {
+    const idx = t.triIdx;
+    for (let k = 0; k < idx.length; k += 3) {
+      const [a, b, c] = [idx[k], idx[k + 1], idx[k + 2]];
+      const ux = positions[3*b+0] - positions[3*a+0], uy = positions[3*b+1] - positions[3*a+1], uz = positions[3*b+2] - positions[3*a+2];
+      const vx = positions[3*c+0] - positions[3*a+0], vy = positions[3*c+1] - positions[3*a+1], vz = positions[3*c+2] - positions[3*a+2];
+      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      for (const v of [a, b, c]) {
+        normals[3*v+0] += nx; normals[3*v+1] += ny; normals[3*v+2] += nz;
+      }
+    }
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffers.nrm);
+  gl.bufferData(gl.ARRAY_BUFFER, normals, gl.DYNAMIC_DRAW);
+}
+
+//////////////////////////////////// camera ///////////////////////////////////
+
+function bbox() {
+  const lo = [1e30, 1e30, 1e30], hi = [-1e30, -1e30, -1e30];
+  const n = state.coords.length / 3;
+  for (let v = 0; v < n; v++) {
+    for (let c = 0; c < 3; c++) {
+      lo[c] = Math.min(lo[c], state.coords[3 * v + c]);
+      hi[c] = Math.max(hi[c], state.coords[3 * v + c]);
+    }
+  }
+  return { lo, hi };
+}
+
+function fitCamera() {
+  const { lo, hi } = bbox();
+  const size = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 1;
+  if (state.dim === 2) {
+    camera2D.cx = (lo[0] + hi[0]) / 2;
+    camera2D.cy = (lo[1] + hi[1]) / 2;
+    camera2D.height = 1.3 * size;
+  } else {
+    camera3D.target = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
+    camera3D.dist = 2.2 * size;
+  }
+}
+
+// column-major 4x4 helpers
+function matMul(a, b) {
+  const out = new Float32Array(16);
+  for (let i = 0; i < 4; i++)
+    for (let j = 0; j < 4; j++)
+      for (let k = 0; k < 4; k++) out[4 * j + i] += a[4 * k + i] * b[4 * j + k];
+  return out;
+}
+
+function mvpMatrix(aspect) {
+  if (state.dim === 2) {
+    const h = camera2D.height, w = h * aspect;
+    return new Float32Array([
+      2 / w, 0, 0, 0,
+      0, 2 / h, 0, 0,
+      0, 0, -0.001, 0,
+      -2 * camera2D.cx / w, -2 * camera2D.cy / h, 0, 1,
+    ]);
+  }
+
+  const { theta, phi, dist, target } = camera3D;
+  const eye = [
+    target[0] + dist * Math.cos(phi) * Math.sin(theta),
+    target[1] + dist * Math.cos(phi) * Math.cos(theta),
+    target[2] + dist * Math.sin(phi),
+  ];
+  const up = [0, 0, 1];
+
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+  const norm = (a) => { const l = Math.hypot(...a); return [a[0]/l, a[1]/l, a[2]/l]; };
+  const dot = (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+
+  const f = norm(sub(target, eye));
+  const s = norm(cross(f, up));
+  const u = cross(s, f);
+  const view = new Float32Array([
+    s[0], u[0], -f[0], 0,
+    s[1], u[1], -f[1], 0,
+    s[2], u[2], -f[2], 0,
+    -dot(s, eye), -dot(u, eye), dot(f, eye), 1,
+  ]);
+
+  const fovScale = 1 / Math.tan(0.35), near = 0.001 * dist, far = 100 * dist;
+  const proj = new Float32Array([
+    fovScale / aspect, 0, 0, 0,
+    0, fovScale, 0, 0,
+    0, 0, (far + near) / (near - far), -1,
+    0, 0, 2 * far * near / (near - far), 0,
+  ]);
+  return matMul(proj, view);
+}
+
+//////////////////////////////////// render ///////////////////////////////////
+
+function draw() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.round(canvas.clientWidth * dpr);
+  const h = Math.round(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+
+  gl.viewport(0, 0, w, h);
+  gl.clearColor(0.102, 0.110, 0.125, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  if (state.tess) {
+    gl.uniformMatrix4fv(loc.uMVP, false, mvpMatrix(w / h));
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.pos);
+    gl.enableVertexAttribArray(loc.aPos);
+    gl.vertexAttribPointer(loc.aPos, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.val);
+    gl.enableVertexAttribArray(loc.aVal);
+    gl.vertexAttribPointer(loc.aVal, 1, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.nrm);
+    gl.enableVertexAttribArray(loc.aNrm);
+    gl.vertexAttribPointer(loc.aNrm, 3, gl.FLOAT, false, 0, 0);
+
+    const haveField = state.current >= 0;
+    gl.uniform1i(loc.uColormap, haveField ? 1 : 0);
+    gl.uniform1i(loc.uLight, state.dim === 3 ? 1 : 0);
+    gl.uniform3f(loc.uColor, 0.42, 0.47, 0.55);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.tri);
+    gl.drawElements(gl.TRIANGLES, state.tess.triIdx.length, gl.UNSIGNED_INT, 0);
+
+    gl.uniform1i(loc.uColormap, 0);
+    gl.uniform1i(loc.uLight, 0);
+    gl.uniform3f(loc.uColor, 0.08, 0.09, 0.10);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.edge);
+    gl.drawElements(gl.LINES, state.tess.edgeIdx.length, gl.UNSIGNED_INT, 0);
+  }
+
+  requestAnimationFrame(draw);
+}
+
+// the colorbar legend uses the same viridis fit as the fragment shader
+{
+  const bar = document.getElementById("colorbar");
+  const ctx = bar.getContext("2d");
+  const img = ctx.createImageData(256, 1);
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255;
+    const poly = (a, b, c, d, e, f, g) => a+t*(b+t*(c+t*(d+t*(e+t*(f+t*g)))));
+    img.data[4*i+0] = 255 * Math.min(1, Math.max(0, poly(0.2777, 0.1050, -0.3308, -4.6342, 6.2282, 4.7763, -5.4354)));
+    img.data[4*i+1] = 255 * Math.min(1, Math.max(0, poly(0.0054, 1.4046, 0.2148, -5.7991, 14.1799, -13.7451, 4.6455)));
+    img.data[4*i+2] = 255 * Math.min(1, Math.max(0, poly(0.3340, 1.3845, 0.0950, -19.3324, 56.6906, -65.3530, 26.3124)));
+    img.data[4*i+3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+/////////////////////////////////// controls //////////////////////////////////
+
+let dragging = false, lastX = 0, lastY = 0;
+
+canvas.addEventListener("mousedown", (e) => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
+window.addEventListener("mouseup", () => { dragging = false; });
+
+window.addEventListener("mousemove", (e) => {
+  if (!dragging) return;
+  const dx = e.clientX - lastX, dy = e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  if (state.dim === 2) {
+    const scale = camera2D.height / canvas.clientHeight;
+    camera2D.cx -= dx * scale;
+    camera2D.cy += dy * scale;
+  } else {
+    camera3D.theta += dx * 0.008;
+    camera3D.phi = Math.min(1.55, Math.max(-1.55, camera3D.phi + dy * 0.008));
+  }
+});
+
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const zoom = Math.exp(e.deltaY * 0.0012);
+  if (state.dim === 2) { camera2D.height *= zoom; }
+  else { camera3D.dist *= zoom; }
+}, { passive: false });
+
+window.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    const step = (e.key === "ArrowRight") ? 1 : -1;
+    const next = Math.min(state.fields.length - 1, Math.max(0, state.current + step));
+    if (next !== state.current) {
+      state.current = next;
+      state.followLatest = (next === state.fields.length - 1);
+      applyField();
+    }
+    e.preventDefault();
+  }
+});
+
+document.getElementById("defscale").addEventListener("input", (e) => {
+  const value = parseFloat(e.target.value);
+  if (isFinite(value)) { state.defScale = value; applyField(); }
+});
+
+document.getElementById("subdiv").addEventListener("input", (e) => {
+  const value = parseInt(e.target.value);
+  if (isFinite(value) && value >= 1 && value <= 16 && value !== state.subdiv) {
+    state.subdiv = value;
+    buildTess();
+    applyField();
+  }
+});
+
+/////////////////////////////////// startup ///////////////////////////////////
+
+fetchState();
+requestAnimationFrame(draw);
+
+</script>
+</body>
+</html>

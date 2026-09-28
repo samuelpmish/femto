@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>femto — physics examples</title>
+<style>
+  body { background: #16181d; color: #e8eaf0; font: 15px/1.6 system-ui, sans-serif; padding: 48px; }
+  a { color: #e8a838; }
+  p { color: #9aa3b2; margin: 0 0 14px; max-width: 760px; }
+  code { color: #cdd4e0; }
+</style>
+</head>
+<body>
+<h1>femto physics examples</h1>
+<p>Each page runs one example from <code>examples/cpp</code>. They share one webassembly module and
+   fetch whichever mesh they need, then draw it and the fields they solve for.</p>
+<p><a href="capacitor_2D.html">parallel-plate capacitor</a> — 2D electrostatics, capacitance from the field energy</p>
+<p><a href="heatsink_3D.html">TO-220 regulator</a> — 3D conduction from the silicon die out to the air, on a choice of heatsink</p>
+<p><a href="fracture_2D.html">fracture specimen</a> — 2D finite-deformation elasticity, a notch opened in load steps</p>
+<p><a href="coffee_cup_modal.html">coffee mug modes</a> — 3D modal analysis of a procedurally generated mug</p>
+<p><a href="magnetostatics_3D.html">induction coil</a> — 3D magnetostatics on a tetrahedral mesh of copper, ferrite and air</p>
+<p><a href="lid_driven_cavity_2D.html">lid-driven cavity</a> — 2D incompressible Navier-Stokes, Taylor-Hood, Newton to the steady state</p>
+<p><a href="wave_disk_2D.html">pressure pulse in a disk</a> — 2D acoustics against the analytic solution: hard wall, absorbing condition, or a PML ring</p>
+</body>
+</html>
