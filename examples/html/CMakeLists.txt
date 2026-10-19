@@ -23,7 +23,7 @@
 
 include(${PROJECT_SOURCE_DIR}/cmake/wasm_module.cmake)
 
-set(FEMTO_HTML_EXAMPLES capacitor_2D heatsink_3D fracture_2D coffee_cup_modal magnetostatics_3D lid_driven_cavity_2D wave_disk_2D)
+set(FEMTO_HTML_EXAMPLES capacitor_2D heatsink_3D fracture_2D coffee_cup_modal magnetostatics_3D lid_driven_cavity_2D wave_disk_2D hall_sensor_2D)
 
 # meshes the examples load, staged next to the pages rather than embedded in
 # the module: a page fetches only the one it needs and writes it into the
@@ -44,6 +44,7 @@ endforeach()
 add_executable(femto_examples_web ${sources})
 set_target_properties(femto_examples_web PROPERTIES OUTPUT_NAME femto_examples)
 femto_wasm_module(femto_examples_web createFemtoExamples)
+target_link_libraries(femto_examples_web PRIVATE triangle)   # hall_sensor_2D meshes itself
 
 set(staged femto_examples_web)
 foreach(mesh_file ${FEMTO_HTML_MESHES})

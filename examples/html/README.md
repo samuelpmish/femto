@@ -66,7 +66,8 @@ is why the page has to be cross-origin isolated — see below (`serve.py` and
 * `cellFacets(cells, verticesPerCell, keep)` for a 2D mesh, and
   `cellBoundary(cells, verticesPerCell, keep)` for the outside of any subset of
   tetrahedra or hexahedra — this is how cut-aways, material views and slices
-  are drawn. Also `centroids`, `arrows`, `bounds`.
+  are drawn. Given triangles it returns the outline of the subset as edges,
+  drawn with `{fill: false, edges: true}` (`hall_sensor_2D`'s core). Also `centroids`, `arrows`, `bounds`.
 * `loadMesh(wasm, name)` fetches a mesh staged next to the page and writes it
   into the module's filesystem at `/<name>`, which is where the examples that
   read one expect it. It is async, and `runner()` awaits its work, so a
@@ -166,6 +167,20 @@ is why the page has to be cross-origin isolated — see below (`serve.py` and
   separates: a tab poking out past a heatsink's plate, through a wider hole or
   below its bottom edge, has no surface to follow and comes out half copper,
   half aluminum.
+* A 2D example can mesh itself instead, with nothing to fetch: link
+  `triangle` (`cmake/triangle.cmake`, Shewchuk's Triangle compiled into the
+  native build and the module alike) and define the `triunsuitable()` its
+  `-u` switch calls with the size function, as `hall_sensor_2D` does. One
+  call then replaces the area-bound passes the site's whistle needs with the
+  prebuilt triangle-wasm, and regional attributes (`-A`) tag the materials.
+  Triangle is not MIT: it is only linked into the examples, never femto.
+* A quadratic field drawn at the mesh vertices looks no better than a linear
+  one. `hall_sensor_2D` evaluates it on a `Domain` whose triangle rule is a
+  grid of reference points (`MeshQuadratureRule::tri.points` can be anything;
+  nothing else reads the rule) and hands the page those points and the small
+  triangles between them, so contours curve inside each element and the
+  color follows B's variation across it. Its point source on P2 uses the
+  element's `indices()` and `shape_function()` the same way.
 * `serve.py` sends `Cache-Control: no-store`, so the 3 MB module is refetched
   on every page during local development. A real host should let it cache, and
   should serve it compressed — the wasm gzips about 3.5 to 1.

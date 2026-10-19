@@ -136,6 +136,31 @@ async function run(name, body) {
     check('magnetostatics_3D', s.centerField() > 10 * s.solenoidEstimate(), 'the ferrite is not concentrating the field');
     return `B on the axis ${(s.centerField() * 1e3).toFixed(1)} mT, peak ${(s.maxField() * 1e3).toFixed(0)} mT`;
   });
+  await run('hall_sensor_2D', m => {
+    const [core, air] = [1000, 1].map(muR => {
+      const h = new m.HallSensor(muR);
+      h.solve({x: 0, y: 0, current: 10}, {x: 45, y: 0, current: 0});
+      const centered = h.signal();
+      h.solve({x: 6, y: -6, current: 10}, {x: 45, y: 0, current: 10});
+      const out = { signal: h.signal(), centered, interference: h.interference(), meter: h.meterCurrent() };
+      const region = h.region(), outline = V.cellBoundary(h.cells(), 3, e => region[e] === 1);
+      check('hall_sensor_2D', outline.cellIds.length > 0, 'no core outline');
+      // the drawing: points, small triangles into them, and the field at them
+      const points = h.drawingPositions(), triangles = h.drawingTriangles(), A = h.drawingPotential(), B = h.drawingB();
+      const top = triangles.reduce((a, b) => Math.max(a, b), 0);
+      check('hall_sensor_2D', points.length === 2 * A.length && B.length === points.length && top < A.length, 'drawing arrays disagree');
+      checkGeometry('hall_sensor_2D', points, 2, V.cellFacets(triangles, 3).facets, null, A, 1);
+      h.delete();
+      return out;
+    });
+    check('hall_sensor_2D', Math.abs(core.signal / core.centered - 1) < 0.01, `off-center wire reads ${core.signal} vs ${core.centered} centered`);
+    check('hall_sensor_2D', Math.abs(core.interference) < 0.1 * Math.abs(air.interference), 'the core does not screen the external wire');
+    check('hall_sensor_2D', core.meter > 0.1 * m.HallSensor.meterFullScale && core.meter < m.HallSensor.meterFullScale, `meter at ${core.meter} A`);
+    const p = m.HallSensor.constrain(1, 0, -15);
+    check('hall_sensor_2D', p[1] < -20 - m.HallSensor.wireRadius + 1e-9, `external wire left in the core at ${p}`);
+    return `reads ${(core.signal * 1e3).toFixed(3)} mT with the core (meter ${(core.meter * 1e6).toFixed(1)} uA), ` +
+           `${(air.signal * 1e3).toFixed(3)} mT without; external wire ${(100 * core.interference / core.signal).toFixed(2)}% vs ${(100 * air.interference / air.signal).toFixed(1)}%`;
+  });
   if (failures) { console.error(`${failures} check(s) failed`); process.exit(1); }
   console.log('all modules and viewer helpers OK');
 })().catch(e => { console.error(e); process.exit(1); });

@@ -61,3 +61,35 @@ TEST(CudaForallVoid, matches_the_host_result_and_reuses_its_output) {
     EXPECT_NEAR(got.data()[i], expected.data()[i], 1.0e-14) << "differs at " << i;
   }
 }
+
+// forall_staged() writes what forall() does: two outputs of different sizes
+// at once, one of them a 648 B record, an input taken by value (which arrives
+// as a non-const pointer, like an output), and a length that leaves the last
+// block part full
+struct TwoOutputs {
+  HOSTDEV void operator()(const mat<3,3> & A, vec<3> x, mat<3,3> & B, mat<3,3,mat<3,3>> & C) const {
+    B = dot(A, transpose(A)) + outer(x, x);
+    for (int i = 0; i < 3; i++) {
+      for (int j = 0; j < 3; j++) { C[i][j] = A(i, j) * B + x[i] * transpose(A); }
+    }
+  }
+};
+
+TEST(CudaForallStaged, matches_forall) {
+  uint32_t n = 1000 + 37;
+  nd::cpu_array<double, 3> h_A = femto::random(stack::array< uint32_t, 3 >{n, 3u, 3u});
+  nd::cpu_array<double, 2> h_x = femto::random(stack::array< uint32_t, 2 >{n, 3u});
+  nd::gpu_array<double, 3> A = h_A, B, B_staged;
+  nd::gpu_array<double, 2> x = h_x;
+  nd::gpu_array<double, 5> C, C_staged;
+
+  forall(TwoOutputs{}, A, x, B, C);
+  forall_staged(TwoOutputs{}, A, x, B_staged, C_staged);
+
+  nd::cpu_array<double, 3> b = B, b_staged = B_staged;
+  nd::cpu_array<double, 5> c = C, c_staged = C_staged;
+  ASSERT_EQ(b_staged.sz, b.sz);
+  ASSERT_EQ(c_staged.sz, c.sz);
+  for (uint32_t i = 0; i < b.sz; i++) { ASSERT_EQ(b_staged.data()[i], b.data()[i]) << "B differs at " << i; }
+  for (uint32_t i = 0; i < c.sz; i++) { ASSERT_EQ(c_staged.data()[i], c.data()[i]) << "C differs at " << i; }
+}

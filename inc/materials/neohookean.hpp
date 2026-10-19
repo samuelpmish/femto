@@ -10,35 +10,34 @@ namespace femto {
 struct NeoHookeanModel {
 
   static constexpr auto dim = 3;
-  static constexpr auto I = Identity<dim>();
 
   // returns P (PK1 stress)
-  auto operator()(mat3 du_dX) const {
-    mat3 F = I + du_dX;
+  __host__ __device__ auto operator()(mat3 du_dX) const {
+    mat3 F = Identity<dim>() + du_dX;
     double J = det(F);
     mat3 invFT = transpose(inv(F));
     return (lambda * log(J) - mu) * invFT + mu * F;
   }
 
   // returns dP
-  auto jvp(mat3 du_dX, mat3 ddu_dX) const {
-    mat3 F = I + du_dX;
+  __host__ __device__ auto jvp(mat3 du_dX, mat3 ddu_dX) const {
+    mat3 F = Identity<dim>() + du_dX;
     double J = det(F);
     mat3 invFT = transpose(inv(F));
     return lambda * ddot(invFT, ddu_dX) * invFT + (mu - lambda * log(J)) * dot(invFT, dot(transpose(ddu_dX), invFT)) + mu * ddu_dX;
   }
 
   // returns dO/dF
-  auto vjp(mat3 du_dX, mat3 dO_dP) const {
-    mat3 F = I + du_dX;
+  __host__ __device__ auto vjp(mat3 du_dX, mat3 dO_dP) const {
+    mat3 F = Identity<dim>() + du_dX;
     double J = det(F);
     mat3 invFT = transpose(inv(F));
     return lambda * ddot(invFT, dO_dP) * invFT + (mu - lambda * log(J)) * dot(invFT, dot(transpose(dO_dP), invFT)) + mu * dO_dP;
   }
 
   // returns dP/dF
-  auto jac(mat3 du_dX) const {
-    mat3 F = I + du_dX;
+  __host__ __device__ auto jac(mat3 du_dX) const {
+    mat3 F = Identity<dim>() + du_dX;
     double logJ = log(det(F));
     mat3 invFT = transpose(inv(F));
 

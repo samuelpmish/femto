@@ -124,8 +124,10 @@ function cellFacets(cells, nv, keep = () => true) {
 }
 
 // the outer faces of a subset of cells (tetrahedra or hexahedra, in femto's
-// vertex order): every interior face is seen twice and dropped
+// vertex order), or the outline of a subset of triangles as edges: every
+// interior face is seen twice and dropped
 const CELL_FACES = {
+  3: [[0, 1], [1, 2], [2, 0]],
   4: [[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]],
   8: [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]]
 };

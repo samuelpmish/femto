@@ -11,8 +11,10 @@
 #include "femto/assert.hpp"
 #include "femto/threadpool.hpp"
 
+#include <algorithm>
 #include <functional>
 #include <type_traits>
+#include <utility>
 
 namespace femto {
 
@@ -338,16 +340,122 @@ uint32_t size_void_outputs(type_list< parameter_types ... >, arg_types & ... arg
   return n;
 }
 
-template < typename ... parameter_types, typename callable, typename ... arg_types >
+// forall_staged(): on the device, each block stages its points' outputs in
+// shared memory and then writes them out as one contiguous span.  launch_void
+// has each thread store its point's output straight into the array, so for an
+// output of more than a word or two, every store a warp makes lands a few
+// bytes in each of 32 cache lines, and with enough warps resident the half
+// written lines outgrow the L2 and cost DRAM read-modify-writes.  For the 648 B
+// tangent of a 3D solid on an A100 that is ~80 GB/s against ~1.6 TB/s staged.
+//
+// The parameter types, not the pointers, say which arguments are outputs: an
+// input taken by value arrives as a non-const pointer too.
+
+// the bytes a block stages per point for a parameter: all of an output, none of an input
+template < typename parameter_t >
+inline constexpr size_t staged_bytes = is_output<parameter_t> ? sizeof(std::remove_reference_t<parameter_t>) : 0;
+
+// where the i-th parameter's staging starts, per point of the block
+template < size_t i, typename ... parameter_types >
+constexpr size_t staged_offset() {
+  size_t bytes[] = {staged_bytes<parameter_types> ..., 0};
+  size_t offset = 0;
+  for (size_t j = i; j > 0; j--) { offset += bytes[j - 1]; }
+  return offset;
+}
+
+#ifdef __CUDACC__
+
+// a parameter at this thread's point: an input straight from its array, an
+// output from the block's staging
+template < typename parameter_t, size_t offset, typename T >
+__device__ T & staged_parameter(T * values, char * staging, uint32_t first) {
+  if constexpr (is_output<parameter_t>) {
+    return reinterpret_cast< T * >(staging + blockDim.x * offset)[threadIdx.x];
+  } else {
+    return values[first + threadIdx.x];
+  }
+}
+
+template < typename parameter_t, size_t offset, typename T >
+__device__ void zero_staged(T * values, char * staging, uint32_t first) {
+  if constexpr (is_output<parameter_t>) { staged_parameter< parameter_t, offset >(values, staging, first) = T{}; }
+}
+
+// an output's staged records out to their span of its array, a word per thread at a time
+template < typename parameter_t, size_t offset, typename T >
+__device__ void write_staged(T * values, const char * staging, uint32_t first, uint32_t count) {
+  if constexpr (is_output<parameter_t>) {
+    using word = std::conditional_t< sizeof(T) % 8 == 0, uint64_t, uint32_t >;
+    static_assert(sizeof(T) % sizeof(word) == 0, "forall_staged(): an output's size has to be a multiple of 4 bytes");
+    const word * from = reinterpret_cast< const word * >(staging + blockDim.x * offset);
+    word * to = reinterpret_cast< word * >(values + first);
+    for (uint32_t k = threadIdx.x; k < count * (sizeof(T) / sizeof(word)); k += blockDim.x) { to[k] = from[k]; }
+  }
+}
+
+// (a __global__ template takes one parameter pack, so the parameter types
+// come to the kernel as a type_list and are unpacked here)
+template < typename functor, typename ... parameter_types, size_t ... i, typename ... pointer_types >
+__device__ void forall_void_staged_block(uint32_t n, const functor & f, char * staging,
+                                         type_list< parameter_types ... >, std::index_sequence< i ... >,
+                                         pointer_types * ... args) {
+  uint32_t first = blockIdx.x * blockDim.x;
+  uint32_t count = min(blockDim.x, n - first);
+  if (threadIdx.x < count) {
+    ( zero_staged< parameter_types, staged_offset< i, parameter_types ... >() >(args, staging, first), ... );
+    f(staged_parameter< parameter_types, staged_offset< i, parameter_types ... >() >(args, staging, first) ...);
+  }
+  __syncthreads();
+  ( write_staged< parameter_types, staged_offset< i, parameter_types ... >() >(args, staging, first, count), ... );
+}
+
+template < typename functor, typename parameters, typename ... pointer_types >
+__global__ void forall_void_staged_kernel(uint32_t n, functor f, parameters, pointer_types * ... args) {
+  extern __shared__ __align__(16) char staging[];
+  forall_void_staged_block(n, f, staging, parameters{}, std::index_sequence_for< pointer_types ... >{}, args ...);
+}
+
+#endif
+
+template < memory::space mem_space, typename ... parameter_types, typename callable, typename ... pointer_types >
+void launch_void_staged(uint32_t n, const callable & f, pointer_types * ... args) {
+  if constexpr (on_device<mem_space>) {
+#ifdef __CUDACC__
+    // as many threads per block as keep its staging inside the 48 KB a kernel
+    // gets without opting in to more: 64 for a 3D solid's tangent
+    constexpr size_t bytes = (staged_bytes<parameter_types> + ... + 0);
+    constexpr uint32_t threads = std::min< size_t >(blocksize, (48 * 1024 / bytes) / 32 * 32);
+    static_assert(threads >= 32, "forall_staged(): a point's outputs are too large to stage (over 1.5 KB)");
+    forall_void_staged_kernel<<< (n + threads - 1) / threads, threads, threads * bytes >>>(
+      n, f, type_list< parameter_types ... >{}, args ...);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+  } else {
+    // the host loop writes each point's outputs in place already
+    launch_void<mem_space>(n, f, args ...);
+  }
+}
+
+template < bool staged = false, typename ... parameter_types, typename callable, typename ... arg_types >
 void forall_void(type_list< parameter_types ... > parameters, callable func, arg_types & ... args) {
 
   const uint32_t n = size_void_outputs(parameters, args ...);
 
-  launch_void< common_memory_space<arg_types...>() >(
-    n,
-    func,
-    reinterpret_cast< std::remove_reference_t<parameter_types> * >(args.data()) ...
-  );
+  if constexpr (staged) {
+    launch_void_staged< common_memory_space<arg_types...>(), parameter_types ... >(
+      n,
+      func,
+      reinterpret_cast< std::remove_reference_t<parameter_types> * >(args.data()) ...
+    );
+  } else {
+    launch_void< common_memory_space<arg_types...>() >(
+      n,
+      func,
+      reinterpret_cast< std::remove_reference_t<parameter_types> * >(args.data()) ...
+    );
+  }
 
 }
 
@@ -427,6 +535,18 @@ void forall(callable func, arg_types & ... args) {
     args ...
   );
 
+}
+
+// forall() for a void q-function, with each gpu block's outputs staged in
+// shared memory and written out together (see impl::launch_void_staged): the
+// same values, much faster for large outputs on the device, and the same as
+// forall() on the host.  One difference: a q-function's outputs start as
+// zeros here, not as their arrays' old values, so it has to write all of them.
+template < typename callable, typename ... arg_types >
+void forall_staged(callable func, arg_types & ... args) {
+  static_assert(std::is_void_v< typename signature_of<callable>::type::return_type >,
+                "forall_staged(): only for a q-function that writes its outputs through references");
+  impl::forall_void< true >(typename signature_of<callable>::type::argument_types{}, func, args ...);
 }
 
 template < typename callable, typename ... arg_types >

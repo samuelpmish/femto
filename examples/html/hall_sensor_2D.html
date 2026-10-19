@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>femto — Hall effect current sensor</title>
+<link rel="stylesheet" href="viewer.css">
+<style>
+  /* the meter and its leads, drawn in the scene's millimeters over the canvas */
+  #overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+</style>
+<!-- The modules are multithreaded (femto's thread pool and the sparse solver
+     run on Web Workers), which needs SharedArrayBuffer, which browsers only
+     give a cross-origin-isolated page.  Where the host cannot send the
+     COOP/COEP headers itself (GitHub Pages), this service worker adds them and
+     reloads the page once; it exits early when the server already does.  Keep
+     it same-origin and at the END of <head>. -->
+<script src="enable-threads.js"></script>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+<svg id="overlay"><g id="world"></g></svg>
+<div id="loading">loading femto.wasm …</div>
+
+<div id="panel" hidden>
+  <h1>Hall current sensor <span>— 2D magnetostatics</span></h1>
+
+  <label class="check"><input type="checkbox" id="core" checked> <span>ferrite core (μ<sub>r</sub> 1000)</span></label>
+  <div class="row"><label>measured wire current <output id="primary_out"></output> A</label>
+    <input type="range" id="primary" min="-30" max="30" step="1" value="10"></div>
+  <div class="row"><label>external wire current <output id="external_out"></output> A</label>
+    <input type="range" id="external" min="-30" max="30" step="1" value="10"></div>
+
+  <div class="block">
+    <label class="check"><input type="checkbox" id="show_lines" checked> field lines</label>
+    <label class="check"><input type="checkbox" id="show_edges"> element edges</label>
+  </div>
+</div>
+
+<div id="legend"><span class="label"></span><span class="min"></span><div class="bar"></div><span class="max"></span></div>
+<div id="hint">drag&nbsp;a&nbsp;wire&nbsp;or&nbsp;click&nbsp;to&nbsp;place&nbsp;it · drag&nbsp;elsewhere&nbsp;to&nbsp;pan · scroll&nbsp;or&nbsp;pinch&nbsp;to&nbsp;zoom</div>
+
+<script src="viewer.js"></script>
+<script src="femto_examples.js"></script>
+<script>
+"use strict";
+
+// The measured wire (copper) sits in the core's window and the external one
+// (blue) outside it.  Both are line currents on a fixed mesh (which the
+// example generates itself), so moving one is a back-substitution with the
+// factorization the example keeps; toggling the core rebuilds it.  The field
+// is quadratic, so it is drawn on a grid of small triangles inside each
+// element, where its contours curve and B varies.  The Hall element's output
+// drives the meter under the core (the example models both).
+
+const LOG_B = [-2, 1];                    // the color range, log10 of |B| in mT
+const CORE = 1, SENSOR = 2;               // HallSensor's regions
+const METER_TOP = -36;                    // mm, where the meter's case starts below the core
+const METER_SWEEP = 50;                   // degrees either side of zero, at full scale
+
+const canvas = document.getElementById("canvas");
+const viewer = new Viewer(canvas, "2d");
+const coreBox = document.getElementById("core");
+const showLines = document.getElementById("show_lines"), showEdges = document.getElementById("show_edges");
+let wasm = null, sim = null, simHasCore = null, scene = null;
+const wires = [{ x: 0, y: 0 }, { x: 45, y: 0 }];   // measured, external (mm)
+const needle = { angle: 0, rate: 0, target: 0, time: null };   // degrees from upright
+
+const values = sliders(() => update());
+coreBox.addEventListener("change", () => update());
+showLines.addEventListener("change", () => { if (scene) scene.lines.visible = showLines.checked; });
+showEdges.addEventListener("change", () => { if (scene) scene.edges.visible = showEdges.checked; });
+
+// a wire's cross section, as one polygon
+function circle(x, y, r, n = 40) {
+  const out = new Float64Array(2 * n);
+  for (let k = 0; k < n; k++) { out[2 * k] = x + r * Math.cos(2 * Math.PI * k / n); out[2 * k + 1] = y + r * Math.sin(2 * Math.PI * k / n); }
+  return out;
+}
+
+// field lines: contours of the potential at a fixed spacing, so the flux
+// between neighbors is the same everywhere and they crowd where |B| is large
+function contours(nodes, cells, A, spacing) {
+  const out = [];
+  for (let e = 0; e < cells.length / 3; e++) {
+    const v = [cells[3 * e], cells[3 * e + 1], cells[3 * e + 2]], a = v.map(i => A[i] / spacing);
+    const top = Math.floor(Math.max(a[0], a[1], a[2]));
+    for (let k = Math.floor(Math.min(a[0], a[1], a[2])) + 1; k <= top; k++) {
+      for (let j = 0; j < 3; j++) {
+        const p = v[j], q = v[(j + 1) % 3], ap = a[j], aq = a[(j + 1) % 3];
+        if ((ap >= k) === (aq >= k)) continue;
+        const t = (k - ap) / (aq - ap);
+        out.push(nodes[2 * p] + t * (nodes[2 * q] - nodes[2 * p]), nodes[2 * p + 1] + t * (nodes[2 * q + 1] - nodes[2 * p + 1]), 0);
+      }
+    }
+  }
+  return new Float32Array(out);
+}
+
+// ---------------------------------------------------------------- the meter
+// A 50-0-50 uA center-zero moving-coil meter in a bakelite case, drawn in the
+// scene's millimeters with y down (the group flips the world's y), its
+// binding posts on top: red (+) and black (-) leads run to them from the foot
+// of the Hall element, down through the slot in the core.
+function buildMeter() {
+  const H = wasm.HallSensor, fullScale = 1e6 * H.meterFullScale;
+  const pivot = [0, 33], R = 18, sweep = METER_SWEEP;        // the scale's arc and its half angle
+  const at = (deg, r) => [pivot[0] + r * Math.sin(deg * Math.PI / 180), pivot[1] - r * Math.cos(deg * Math.PI / 180)];
+  let scale = "";
+  for (let v = -fullScale; v <= fullScale; v += fullScale / 10) {
+    const deg = sweep * v / fullScale, major = Math.round(v / (fullScale / 5)) * (fullScale / 5) === Math.round(v);
+    const [x0, y0] = at(deg, R), [x1, y1] = at(deg, R + (major ? 2 : 1.1));
+    scale += `<line x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}" stroke="#2b2b2b" stroke-width="${major ? 0.35 : 0.22}"/>`;
+    if (major) { const [tx, ty] = at(deg, R + 4.2); scale += `<text x="${tx}" y="${ty + 0.7}">${Math.abs(Math.round(v))}</text>`; }
+  }
+  const [a0, b0] = at(-sweep, R), [a1, b1] = at(sweep, R);
+  // which way the needle goes for current into the red post
+  const [mx, my] = at(-sweep, R - 4), [px, py] = at(sweep, R - 4);
+  scale += `<text x="${mx}" y="${my + 1.2}" font-size="4">−</text><text x="${px}" y="${py + 1.2}" font-size="4">+</text>`;
+
+  // the leads, in world coordinates: down the slot, then off to the posts
+  const foot = H.sensorY - 0.5 * H.sensorHeight, below = -0.5 * H.coreWidth - 3;
+  const lead = (x, post, color, under) => {
+    const d = `M ${x} ${foot} L ${x} ${below} C ${x} ${below - 6} ${post} ${METER_TOP + 6} ${post} ${METER_TOP - 3.2}`;
+    return `<path d="${d}" fill="none" stroke="${under}" stroke-width="0.6" stroke-linecap="round"/>` +
+           `<path d="${d}" fill="none" stroke="${color}" stroke-width="0.4" stroke-linecap="round"/>`;
+  };
+  const post = (x, color) => `<circle cx="${x}" cy="3.2" r="2.3" fill="${color}" stroke="#000" stroke-width="0.3"/>` +
+                             `<circle cx="${x}" cy="3.2" r="0.8" fill="#c9c9c9"/>`;
+
+  document.getElementById("world").innerHTML =
+    lead(-0.35, -12, "#1b1b1b", "#9a9a9a") + lead(0.35, 12, "#d32f2f", "#4a0d0d") +
+    `<g transform="translate(0 ${METER_TOP}) scale(1 -1)" font-family="Georgia, 'Times New Roman', serif" text-anchor="middle">
+       <defs><linearGradient id="bakelite" x1="0" y1="0" x2="0" y2="1">
+         <stop offset="0" stop-color="#3a3530"/><stop offset="1" stop-color="#16130f"/></linearGradient></defs>
+       <rect x="-24" y="0" width="48" height="41" rx="3.5" fill="url(#bakelite)" stroke="#000" stroke-width="0.4"/>
+       ${post(-12, "#1b1b1b")}${post(12, "#d32f2f")}
+       <text x="-16.2" y="4.3" font-size="3" fill="#d8d0c0">−</text><text x="16.2" y="4.3" font-size="3" fill="#d8d0c0">+</text>
+       <rect x="-21" y="6.5" width="42" height="30" rx="1.5" fill="#f1e8cf" stroke="#111" stroke-width="0.4"/>
+       <path d="M ${a0} ${b0} A ${R} ${R} 0 0 1 ${a1} ${b1}" fill="none" stroke="#2b2b2b" stroke-width="0.3"/>
+       <g font-size="2" fill="#2b2b2b">${scale}</g>
+       <text x="0" y="27.5" font-size="3.4" fill="#2b2b2b">μA</text>
+       <line id="needle" x1="${pivot[0]}" y1="${pivot[1]}" x2="${pivot[0]}" y2="${pivot[1] - R - 1.2}" stroke="#141414" stroke-width="0.35" stroke-linecap="round"/>
+       <circle cx="${pivot[0]}" cy="${pivot[1]}" r="1.5" fill="#222"/>
+       <text x="0" y="39.6" font-size="1.7" fill="#a49a88" letter-spacing="0.05">HW-101A HALL ELEMENT · 1 V DRIVE</text>
+     </g>`;
+  return { element: document.getElementById("needle"), pivot };
+}
+
+// every frame: keep the overlay on the scene's millimeters, and swing the
+// needle toward the reading like a damped movement (with stops just past
+// full scale)
+function frame(t) {
+  if (!scene) return;
+  const W = canvas.clientWidth, Hc = canvas.clientHeight, c = viewer.camera, s = Hc / (2 * c.halfHeight);
+  const tx = (1 + viewer.inset()) * W / 2 - c.pan[0] * s, ty = Hc / 2 + c.pan[1] * s;
+  document.getElementById("world").setAttribute("transform", `matrix(${s} 0 0 ${-s} ${tx} ${ty})`);
+  const dt = needle.time === null ? 0 : Math.min(0.05, (t - needle.time) / 1000);
+  needle.time = t;
+  needle.rate += (120 * (needle.target - needle.angle) - 14 * needle.rate) * dt;
+  needle.angle += needle.rate * dt;
+  scene.meter.element.setAttribute("transform", `rotate(${needle.angle} ${scene.meter.pivot[0]} ${scene.meter.pivot[1]})`);
+}
+
+// ---------------------------------------------------------------- the scene
+// the layers, built once: both cases share the mesh
+function buildScene() {
+  const nodes = sim.nodes(), cells = sim.cells(), region = sim.region(), r = wasm.HallSensor.wireRadius;
+  const points = sim.drawingPositions(), triangles = sim.drawingTriangles();
+  const geometry = new Geometry(points, 2, cellFacets(triangles, 3).facets);
+  viewer.add(geometry, { scalar: true });
+  const edges = viewer.add(new Geometry(nodes, 2, cellFacets(cells, 3).facets), { fill: false, edges: true, edgeColor: [0.16, 0.17, 0.2], visible: showEdges.checked });
+  const lines = viewer.add(new Lines(new Float32Array(0)), { color: [0.04, 0.04, 0.06], visible: showLines.checked });
+  const outline = viewer.add(new Geometry(nodes, 2, cellBoundary(cells, 3, e => region[e] === CORE).facets), { fill: false, edges: true });
+  const sensor = cellFacets(cells, 3, e => region[e] === SENSOR);
+  viewer.add(new Geometry(nodes, 2, cellBoundary(cells, 3, e => region[e] === SENSOR).facets), { fill: false, edges: true, edgeColor: [0.95, 0.95, 1] });
+  viewer.add(new Geometry(nodes, 2, sensor.facets, sensor.cellIds), { color: [0.95, 0.95, 1], alpha: 0.4 });
+  const disk = new Uint32Array([40, ...Array.from({ length: 40 }, (_, k) => k)]);
+  const wireShapes = wires.map(w => new Geometry(circle(w.x, w.y, r), 2, disk));
+  const wireLayers = [viewer.add(wireShapes[0], { color: [0.85, 0.55, 0.25], edges: true, edgeColor: [0.1, 0.1, 0.12] }),
+                      viewer.add(wireShapes[1], { color: [0.45, 0.68, 0.95], edges: true, edgeColor: [0.1, 0.1, 0.12] })];
+  viewer.fit(new Float32Array([-55, METER_TOP - 41, 0, 55, 28, 0]), 1.08);
+  return { points, triangles, geometry, edges, lines, outline, wireShapes, wireLayers, meter: buildMeter() };
+}
+
+const update = runner(() => {
+  const core = coreBox.checked;
+  if (simHasCore !== core) {
+    if (sim) sim.delete();
+    sim = new wasm.HallSensor(core ? 1000 : 1);
+    simHasCore = core;
+    if (!scene) scene = buildScene();
+    // without the core its outline stays, dimmed, to compare against
+    scene.outline.edgeColor = core ? [0.92, 0.93, 0.96] : [0.42, 0.44, 0.5];
+  }
+
+  const { primary, external } = values();
+  sim.solve({ x: wires[0].x, y: wires[0].y, current: primary }, { x: wires[1].x, y: wires[1].y, current: external });
+
+  const B = sim.drawingB(), logB = new Float64Array(B.length / 2);
+  for (let i = 0; i < logB.length; i++) logB[i] = Math.log10(Math.max(1e-12, 1e3 * Math.hypot(B[2 * i], B[2 * i + 1])));
+  scene.geometry.vertexScalar(logB);
+  legend(viewer, LOG_B[0], LOG_B[1], "|B|", v => `${+(10 ** v).toPrecision(2)} mT`);
+
+  // Wb/m between field lines: mu0 times a share of the larger current, so the
+  // lines stay readable at any current (the color carries the magnitude).
+  // The core carries so much more flux than the air that its share is larger
+  const spacing = 4e-7 * Math.PI * Math.max(1, Math.abs(primary), Math.abs(external)) * (core ? 0.4 : 0.1);
+  scene.lines.object.set(contours(scene.points, scene.triangles, sim.drawingPotential(), spacing));
+  [primary, external].forEach((I, k) => {
+    scene.wireLayers[k].color = I === 0 ? [0.4, 0.42, 0.47] : k === 0 ? [0.85, 0.55, 0.25] : [0.45, 0.68, 0.95];
+  });
+  needle.target = METER_SWEEP * Math.max(-1.1, Math.min(1.1, sim.meterCurrent() / wasm.HallSensor.meterFullScale));
+});
+
+// ---------------------------------------------------------------- the wires
+// a press on a wire drags it (and is kept from the viewer, which would pan);
+// a press elsewhere pans, and if it does not move, places the wire belonging
+// on that side of the core there
+function moveWire(k, x, y) {
+  const p = wasm.HallSensor.constrain(k, x, y);
+  wires[k].x = p[0]; wires[k].y = p[1];
+  scene.wireShapes[k].setPositions(circle(p[0], p[1], wasm.HallSensor.wireRadius));
+  update();
+}
+
+function wireAt(clientX, clientY) {
+  const [x, y] = viewer.worldAt(clientX, clientY);
+  const reach = wasm.HallSensor.wireRadius + 12 * viewer.camera.halfHeight / Math.max(1, canvas.clientHeight);
+  return wires.findIndex(w => Math.hypot(x - w.x, y - w.y) < reach);
+}
+
+let dragging = -1, pressed = null;
+window.addEventListener("pointerdown", e => {
+  if (e.target !== canvas || !scene) return;
+  dragging = wireAt(e.clientX, e.clientY);
+  if (dragging < 0) { pressed = [e.clientX, e.clientY]; return; }
+  canvas.style.cursor = "grabbing";
+  e.stopPropagation();
+}, { capture: true });
+window.addEventListener("pointermove", e => {
+  if (dragging >= 0) { moveWire(dragging, ...viewer.worldAt(e.clientX, e.clientY)); return; }
+  if (scene && e.target === canvas && !pressed) canvas.style.cursor = wireAt(e.clientX, e.clientY) >= 0 ? "grab" : "";
+});
+window.addEventListener("pointerup", e => {
+  if (dragging < 0 && pressed && Math.hypot(e.clientX - pressed[0], e.clientY - pressed[1]) < 4) {
+    const [x, y] = viewer.worldAt(e.clientX, e.clientY);
+    moveWire(Math.max(Math.abs(x), Math.abs(y)) < 0.5 * wasm.HallSensor.holeWidth ? 0 : 1, x, y);
+  }
+  if (dragging >= 0) canvas.style.cursor = "grab";
+  dragging = -1; pressed = null;
+});
+window.addEventListener("pointercancel", () => { dragging = -1; pressed = null; });
+
+createFemtoExamples().then(module => {
+  wasm = module;
+  document.getElementById("loading").remove();
+  document.getElementById("panel").hidden = false;
+  update();
+  viewer.start(frame);
+}).catch(reportLoadFailure);
+</script>
+</body>
+</html>
