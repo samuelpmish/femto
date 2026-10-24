@@ -2,6 +2,7 @@
 
 #include "fm/types/matrix.hpp"
 
+#include "linear_algebra/dev.hpp"
 #include "materials/linear_elasticity.hpp"
 
 namespace femto {
@@ -33,8 +34,7 @@ struct LinearViscoelasticModel {
   double dt;           // the step the viscous strain is advanced over
 
   __host__ __device__ void operator()(const mat3 & du_dX, const mat3 & ev_old, mat3 & stress, mat3 & ev) const {
-    mat3 e = 0.5 * (du_dX + transpose(du_dX));
-    mat3 e_dev = e - (tr(e) / 3.0) * Identity<3>();
+    mat3 e_dev = dev(0.5 * (du_dX + transpose(du_dX)));
     double x = dt / tau;
     ev = (ev_old + x * e_dev) / (1.0 + x);
     stress = LinearElasticModel{lambda, mu}(du_dX) + 2.0 * mu_v * (e_dev - ev);

@@ -10,6 +10,7 @@
 #include "materials/neohookean.hpp"
 #include "materials/corotational.hpp"
 #include "materials/viscoelasticity.hpp"
+#include "materials/J2_plasticity.hpp"
 
 #include <cmath>
 #include <iostream>
@@ -311,4 +312,122 @@ TEST(LinearViscoelastic, relaxes_to_the_equilibrium_modulus) {
   mat3 dilatation = 0.01 * Identity<3>();
   material(dilatation, mat3{}, stress, ev);
   EXPECT_NEAR(norm(stress - LinearElasticModel{lambda, mu}(dilatation)), 0.0, 1.0e-15);
+}
+
+// central differences of a stress against a tangent, componentwise, relative to the tangent's size
+template < typename stress_t >
+void check_tangent(stress_t stress, mat3 du_dX, const mat< 3, 3, mat3 > & dP_dF, double tol) {
+  double eps = 1.0e-6, scale = 0.0;
+  for (int i = 0; i < 3; i++) { for (int j = 0; j < 3; j++) { scale = std::max(scale, norm(dP_dF[i][j])); } }
+  for (int k = 0; k < 3; k++) {
+    for (int l = 0; l < 3; l++) {
+      mat3 dP_fd = (stress(du_dX + eps * e<3>(k, l)) - stress(du_dX - eps * e<3>(k, l))) / (2 * eps);
+      for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+          EXPECT_NEAR(dP_fd(i, j), dP_dF[i][j][k][l], tol * scale) << "dP_" << i << j << " / dF_" << k << l;
+        }
+      }
+    }
+  }
+}
+
+TEST(J2Plasticity, tangent_elastic_and_plastic) {
+  J2PlasticityModel model{2.0, 1.0, 0.05, 0.3};
+  mat3 ep_old = 0.01 * mat3(sym3(femto::random_mat<3,3>()));
+  ep_old = ep_old - (tr(ep_old) / 3.0) * Identity<3>();
+  double alpha_old = 0.02;
+  for (double scale : {0.001, 0.1}) {
+    mat3 du_dX = scale * femto::random_mat<3,3>();
+    bool plastic = model.radial_return(du_dX, ep_old, alpha_old).dgamma > 0.0;
+    EXPECT_EQ(plastic, scale > 0.01) << "scale " << scale;
+    auto stress = [&](mat3 H) { mat3 sigma, ep; double alpha; model(H, ep_old, alpha_old, sigma, ep, alpha); return sigma; };
+    check_tangent(stress, du_dX, model.jac(du_dX, ep_old, alpha_old), 1.0e-8);
+  }
+}
+
+TEST(J2Plasticity, returns_to_the_hardened_yield_surface) {
+  double sigma_y = 0.05, H = 0.3;
+  J2PlasticityModel model{2.0, 1.0, sigma_y, H};
+  mat3 du_dX = 0.1 * femto::random_mat<3,3>(), sigma, ep;
+  double alpha;
+  model(du_dX, mat3{}, 0.0, sigma, ep, alpha);
+  mat3 s = sigma - (tr(sigma) / 3.0) * Identity<3>();
+  EXPECT_GT(alpha, 0.0);
+  EXPECT_NEAR(norm(s), std::sqrt(2.0 / 3.0) * (sigma_y + H * alpha), 1.0e-14);
+  // the plastic flow is deviatoric, along s, and alpha is its equivalent measure
+  EXPECT_NEAR(tr(ep), 0.0, 1.0e-15);
+  EXPECT_NEAR(norm(ep / norm(ep) - s / norm(s)), 0.0, 1.0e-12);
+  EXPECT_NEAR(alpha, std::sqrt(2.0 / 3.0) * norm(ep), 1.0e-15);
+}
+
+template < typename kinematics >
+void check_corotational_tangent() {
+  CorotationalModel< kinematics > model{2.0, 1.0};
+  mat3 Q = RotationMatrix(vec3{0.3, -0.5, 0.4});
+  mat3 du_dX_old = dot(Q, Identity<3>() + 0.05 * femto::random_mat<3,3>()) - Identity<3>();
+  mat3 step = dot(mat3(RotationMatrix(vec3{0.02, 0.01, -0.01})), Identity<3>() + 0.003 * femto::random_mat<3,3>());
+  mat3 du_dX = dot(step, Identity<3>() + du_dX_old) - Identity<3>();
+  mat3 sigma_old = 0.1 * mat3(sym3(femto::random_mat<3,3>()));
+  auto stress = [&](mat3 H) { mat3 P, sigma; model(H, du_dX_old, sigma_old, P, sigma); return P; };
+  check_tangent(stress, du_dX, model.jac(du_dX, du_dX_old, sigma_old), 1.0e-7);
+}
+
+TEST(Corotational, hughes_winget_tangent) { check_corotational_tangent< HughesWinget >(); }
+TEST(Corotational, rashid_tangent) { check_corotational_tangent< RashidNewton >(); }
+
+// jvp() is jac() applied to a direction
+template < typename jvp_t >
+void check_jvp(jvp_t jvp, const mat< 3, 3, mat3 > & dP_dF) {
+  mat3 ddu_dX = femto::random_mat<3,3>(), expected{};
+  for (int i = 0; i < 3; i++) { for (int j = 0; j < 3; j++) { expected(i, j) = ddot(dP_dF[i][j], ddu_dX); } }
+  EXPECT_NEAR(norm(jvp(ddu_dX) - expected), 0.0, 1.0e-13 * norm(expected));
+}
+
+TEST(J2Plasticity, jvp_is_jac) {
+  J2PlasticityModel model{2.0, 1.0, 0.05, 0.3};
+  for (double scale : {0.001, 0.1}) {
+    mat3 du_dX = scale * femto::random_mat<3,3>();
+    check_jvp([&](mat3 d) { return model.jvp(du_dX, mat3{}, 0.0, d); }, model.jac(du_dX, mat3{}, 0.0));
+  }
+}
+
+template < typename kinematics >
+void check_corotational_jvp() {
+  CorotationalModel< kinematics > model{2.0, 1.0};
+  mat3 du_dX_old = 0.05 * femto::random_mat<3,3>(), sigma_old = 0.1 * mat3(sym3(femto::random_mat<3,3>()));
+  mat3 du_dX = du_dX_old + 0.003 * femto::random_mat<3,3>();
+  check_jvp([&](mat3 d) { return model.jvp(du_dX, du_dX_old, sigma_old, d); }, model.jac(du_dX, du_dX_old, sigma_old));
+}
+
+TEST(Corotational, hughes_winget_jvp_is_jac) { check_corotational_jvp< HughesWinget >(); }
+TEST(Corotational, rashid_jvp_is_jac) { check_corotational_jvp< RashidNewton >(); }
+
+TEST(Dev, is_traceless_and_removes_only_the_mean) {
+  mat3 A = femto::random_mat<3,3>();
+  mat3 D = dev(A);
+  EXPECT_NEAR(tr(D), 0.0, 1.0e-15);
+  EXPECT_NEAR(norm(A - D - (tr(A) / 3.0) * Identity<3>()), 0.0, 1.0e-15);
+  mat2 B = femto::random_mat<2,2>();
+  EXPECT_NEAR(tr(dev(B)), 0.0, 1.0e-15);
+}
+
+TEST(J2PlasticityFiniteStrain, elastic_then_returns_to_the_yield_surface) {
+  double K = 2.0, mu = 1.0, sigma_y = 0.05;
+  J2PlasticityFiniteStrainModel model{K, mu, sigma_y};
+  J2PlasticityFiniteStrainModel::State state{Identity<3>(), Identity<3>(), 0.0};
+
+  // a small shear stays elastic
+  mat3 small{};
+  small(0, 1) = 0.01;
+  model(state, small);
+  EXPECT_EQ(state.alpha, 0.0);
+  EXPECT_NEAR(norm(state.F_old - (Identity<3>() + small)), 0.0, 1.0e-15);
+
+  // a large one yields, and the deviatoric Kirchhoff stress lands on the hardened yield surface
+  mat3 large{};
+  large(0, 1) = 0.2;
+  mat3 tau = model(state, large);
+  EXPECT_GT(state.alpha, 0.0);
+  EXPECT_NEAR(norm(dev(tau)), std::sqrt(2.0 / 3.0) * (sigma_y + K * state.alpha), 1.0e-14);
+  EXPECT_NEAR(norm(state.F_old - (Identity<3>() + large)), 0.0, 1.0e-15);
 }
