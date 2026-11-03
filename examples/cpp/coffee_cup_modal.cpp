@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // 3D solid mechanics: a coffee mug is generated procedurally and its lowest
 // elastic vibration modes are computed.  The assembly of the mass and
 // stiffness matrices and the shift-inverted Lanczos eigensolver live in

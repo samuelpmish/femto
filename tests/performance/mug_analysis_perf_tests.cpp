@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // performance breakdown of the coffee mug solid mechanics analysis, matching
 // what the web demo runs for the default slider settings:
 //

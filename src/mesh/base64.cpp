@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: 2016-2024 tomykaira
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+//
+// Adapted from macaron::Base64 by tomykaira (MIT):
+// https://gist.github.com/tomykaira/f0fd86b6c73063283afe550bc5d77594
+// see LICENSE.macaron-base64 in this directory
+
 #include "base64.hpp"
 
 #include <cstring>

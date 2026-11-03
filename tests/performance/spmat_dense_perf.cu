@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // CSR scatter vs element-matrix store: the library's CUDA sparse matrix
 // kernel against the library's element_integrate() (integrate_spmat_deterministic.cuh),
 // which writes K(e, ci*NC+cj, I*NN+J) instead of searching the CSR row and

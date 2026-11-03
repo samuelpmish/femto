@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // instantiate cuBQL's device builders for the BVH type femto uses (see
 // bvh.hpp). Only the builders femto needs are instantiated here; if another
 // one (sahBuilder, rebinRadixBuilder, ...) is needed later, add it to this

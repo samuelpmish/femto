@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // sweep the elements-per-block launch parameter of the GPU `evaluate`
 // kernels, timing an isoparametric gradient evaluation for scalar and
 // vector H1 fields on 2D and 3D meshes

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 #include "linear_algebra/sparse_matrix.hpp"
 
 #include <fstream>

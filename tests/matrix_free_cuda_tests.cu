@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // End-to-end agreement between the CPU and CUDA matrix-free kernels
 // (evaluate / integrate_residual) across every geometry and both families,
 // on isoparametric and spatial domains.

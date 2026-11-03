@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // Sparse matrix integration experiments (CUDA backend).
 //
 // Explores, for poisson (NC=1) and elasticity (NC=3) stiffness assembly:

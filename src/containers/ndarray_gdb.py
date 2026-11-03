@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+# SPDX-License-Identifier: MIT
+
 ###############################################################################
 # Copy this file to "~/.gdb" (creating the directory, if not
 # present) and then apppend the following line to the file "~/.gdbinit"

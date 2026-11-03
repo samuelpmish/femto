@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // The MITC family (MITC3+ and MITC4+, p = 1 only) places its nodes on the vertices, plus

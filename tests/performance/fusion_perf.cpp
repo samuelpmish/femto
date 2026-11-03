@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // Kernel fusion experiment, CPU driver.
 //
 // Compares three implementations of the residual / stiffness calculation:

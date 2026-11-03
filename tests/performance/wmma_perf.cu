@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // Tensor-core (FP64 wmma 8x8x4) experiment for residual and stiffness kernels.
 //
 // The element-level contractions are written as small GEMMs on shared-memory

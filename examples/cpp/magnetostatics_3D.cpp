@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // 3D magnetostatics: an induction-heating work coil -- six turns of thick
 // copper -- wound around a cylindrical ferrite core, in a box of air.  The
 // vector potential A is an H(curl) field on tetrahedra solving

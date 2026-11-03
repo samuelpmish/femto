@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // 2D incompressible Navier-Stokes: the lid-driven cavity.  A square box of
 // fluid is driven by its top wall sliding at the lid speed; the other walls
 // are no-slip.  Taylor-Hood elements (Q2 velocity, Q1 pressure) and the

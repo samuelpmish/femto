@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Evaluation of *test* basis functions for sparse matrix assembly, shared by

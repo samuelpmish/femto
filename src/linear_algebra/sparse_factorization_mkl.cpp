@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 #ifdef FEMTO_ENABLE_MKL
 
 // MKL PARDISO backends, through Eigen's wrapper types. The LLT/LDLT

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // 2D fracture specimen: a square coupon with a sharp notch cut in from its
 // left edge and a pin hole above and below the notch, meshed with triangles
 // graded toward the notch tip (data/meshes/fracture_specimen.msh, converted

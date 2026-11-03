@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+# SPDX-License-Identifier: MIT
+
 """Static file server with the cross-origin isolation headers that
 SharedArrayBuffer (and therefore the multithreaded femto wasm build)
 requires. Usage:

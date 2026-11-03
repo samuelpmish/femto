@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 #include "femto/mesh/io.hpp"
 
 #include "fm/operations/print.hpp" // operator<< for the node coordinates

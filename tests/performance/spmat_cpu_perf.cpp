@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // CPU sparse matrix / residual integration prototypes (linear-geometry tets),
 // comparing the femto library path against FFCx-inspired kernels:
 //   cpu:fixed   compile-time sizes, restrict, stack A_e, one pass over qdata,

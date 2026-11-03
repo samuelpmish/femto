@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 #if 0
 // 2D compressible hydro example (triple-point-like shock problem) that
 // publishes its solution fields to a browser-based viewer via femto::server

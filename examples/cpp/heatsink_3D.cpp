@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // 3D heat conduction: a TO-220 voltage regulator on a heatsink.  The package
 // is modeled the way it is built -- a copper tab with its mounting hole, the
 // epoxy body molded around it, the silicon die soldered to the tab, and three

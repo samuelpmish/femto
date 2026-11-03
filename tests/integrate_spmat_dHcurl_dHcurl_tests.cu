@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // GPU counterpart of integrate_spmat_dHcurl_dHcurl_tests.cpp: checks that the
 // CUDA sparse matrix assembly kernel agrees with the (independently verified)
 // CPU kernel for curl-curl Hcurl operators.

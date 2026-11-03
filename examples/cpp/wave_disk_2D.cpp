@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // 2D acoustics on a disk: why unbounded domains need absorbing boundaries.
 // A pressure pulse set off inside the unit disk should spread out and leave,
 // as it does in the analytic solution of the wave equation on the whole

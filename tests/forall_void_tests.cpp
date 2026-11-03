@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // forall() over a q-function that returns void and writes through its non-const
 // reference arguments.  It has to agree with the value-returning overload, size
 // an output that has not been allocated yet, and leave an output that is already

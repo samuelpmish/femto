@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // CPU prototype kernels for sparse matrix / residual integration on
 // linear-geometry tets, in the style of the FFCx-generated DOLFINx kernels:
 // compile-time sizes, restrict pointers, a stack element matrix filled in one

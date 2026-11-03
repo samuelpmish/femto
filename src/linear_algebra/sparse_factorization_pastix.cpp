@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 #ifdef FEMTO_ENABLE_PASTIX
 
 // PaStiX backends (https://gitlab.inria.fr/solverstack/pastix): multithreaded

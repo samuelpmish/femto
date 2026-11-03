@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 #include "femto/quadrature.hpp"
 #include "femto/interpolation.hpp"
 

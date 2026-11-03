@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+# SPDX-License-Identifier: MIT
+
 """Demote mesh elements to first order and write binary Gmsh 2.2."""
 
 from __future__ import annotations

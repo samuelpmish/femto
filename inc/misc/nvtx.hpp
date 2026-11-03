@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 #if defined(FEMTO_ENABLE_CUDA) && __has_include(<nvtx3/nvToolsExt.h>)

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Shared machinery for the MITC (mixed interpolation of tensorial components) shell

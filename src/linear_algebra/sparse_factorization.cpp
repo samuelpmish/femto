@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // backend-independent parts of the sparse direct solver interface: backend
 // selection and the public inv() / dot() / update() entry points for host
 // matrices (the device-memory overloads live in sparse_factorization_cudss.cu)

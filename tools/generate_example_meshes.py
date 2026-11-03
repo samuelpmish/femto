@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+# SPDX-License-Identifier: MIT
+
 """Generate the tetrahedral meshes that the browser examples load.
 
     python3 -m pip install wildmeshing meshio

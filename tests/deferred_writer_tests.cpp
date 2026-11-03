@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // evaluate() and the residual form of integrate() return writers rather than
 // freshly allocated results (nd::array::writer, Residual::writer), so that
 // assigning into a destination that is already the right size refills it in

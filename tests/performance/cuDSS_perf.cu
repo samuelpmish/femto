@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 #include <cuda_runtime.h>
 #include <cudss.h>
 #if __has_include(<nvtx3/nvToolsExt.h>)

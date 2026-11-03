@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
 
 #include "misc/timer.hpp"
 #include "containers/ndarray.hpp"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // Prototype of the MITC3+ and MITC4+ shell elements as a femto Family, and their verification
 // on the plate and shell problems used in the MITC papers (see docs/mitc_shells/mitc_shells.md,
 // section 8.4).

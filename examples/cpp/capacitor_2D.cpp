@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // 2D parallel-plate capacitor: two conducting rectangles a gap apart, a
 // dielectric block filling part of the gap, everything in a box of air.
 // Each plate is pinned to its voltage at a single node; the plates are

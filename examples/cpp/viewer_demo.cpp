@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // minimal example of embedding the femto::server viewer in an application:
 // pushes a few timesteps of a scalar field and a displacement field on a
 // degree-2 3D hex mesh, then keeps serving them until ctrl+C

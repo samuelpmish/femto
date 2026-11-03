@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // Eigen's built-in sparse direct solvers: always available, but slower
 // than the MKL PARDISO / PaStiX backends
 

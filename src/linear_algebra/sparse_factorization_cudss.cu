@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // NVIDIA cuDSS backend: factorizes and solves on the GPU. This is the
 // backend for device-memory matrices (inv(sparse_matrix<gpu>)), and host
 // matrices can use it too, in which case the matrix is copied to the device

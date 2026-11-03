@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // the device half of forall_void_tests.cpp: forall() over a void q-function
 // has to agree with the host result, size an unallocated output, and leave an
 // output that is already the right shape in place.

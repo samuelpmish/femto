@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // ScalarPML: the update solves its implicit equation and jac() is the total
 // derivative of the flux through it, at a point in 2D and 3D; and on a mesh
 // the assembled tangent agrees with perturbations of the residual across a
