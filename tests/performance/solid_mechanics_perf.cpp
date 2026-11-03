@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // Residual and element stiffness evaluation for 3D solid mechanics, five
 // constitutive models on two meshes at two polynomial orders
 // (hidden/material_perftest.md):

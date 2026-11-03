@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // 2D magnetostatics of a Hall effect current sensor: the wire being measured
 // passes through the window of a ferrite core, which gathers the field
 // circling the wire and drives it across a narrow gap, where a Hall element

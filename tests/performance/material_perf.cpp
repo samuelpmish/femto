@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-License-Identifier: MIT
+
 // The cost of the q-function for the solid mechanics models in inc/materials,
 // next to the interpolation and integration it sits between, on the same mesh.
 //
