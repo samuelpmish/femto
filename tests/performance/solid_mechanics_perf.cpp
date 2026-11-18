@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText: Copyright (c) 2023-2026 Sam Mish
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: MIT
 
 // Residual and element stiffness evaluation for 3D solid mechanics, five
