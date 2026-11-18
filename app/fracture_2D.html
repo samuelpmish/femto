@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>femto — fracture specimen</title>
+<link rel="stylesheet" href="viewer.css">
+<!-- The modules are multithreaded (femto's thread pool and the sparse solver
+     run on Web Workers), which needs SharedArrayBuffer, which browsers only
+     give a cross-origin-isolated page.  Where the host cannot send the
+     COOP/COEP headers itself (GitHub Pages), this service worker adds them and
+     reloads the page once; it exits early when the server already does.  Keep
+     it same-origin and at the END of <head>. -->
+<script src="enable-threads.js"></script>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+<div id="loading">loading femto.wasm …</div>
+
+<div id="panel" hidden>
+  <h1>notched specimen <span>— 2D elasticity</span></h1>
+
+  <div class="block">
+    <label>material</label>
+    <div class="button-row">
+      <button id="btn_linear" class="active">linear elastic</button>
+      <button id="btn_neo">neo-Hookean</button>
+    </div>
+    <label style="display:block;margin-top:8px">plane state</label>
+    <div class="button-row">
+      <button id="btn_strain" class="active">plane strain</button>
+      <button id="btn_stress">plane stress</button>
+    </div>
+  </div>
+
+  <div class="row"><label>Young's modulus <output id="E_out"></output> MPa</label>
+    <input type="range" id="E" min="200" max="4000" step="100" value="1000"></div>
+  <div class="row"><label>Poisson ratio <output id="nu_out"></output></label>
+    <input type="range" id="nu" min="0.05" max="0.45" step="0.01" value="0.3"></div>
+  <div class="row"><label>pin opening <output id="opening_out"></output> mm</label>
+    <input type="range" id="opening" min="0.2" max="6" step="0.2" value="2"></div>
+  <div class="row"><label>load steps <output id="loadSteps_out"></output></label>
+    <input type="range" id="loadSteps" min="1" max="20" step="1" value="10"></div>
+
+  <div class="block">
+    <div class="button-row">
+      <button id="btn_play">run load steps</button>
+      <button id="btn_reset">reset</button>
+    </div>
+    <div class="row"><label>deformation scale <output id="scale_out"></output>×</label>
+      <input type="range" id="scale" min="1" max="20" step="1" value="1"></div>
+    <label class="check"><input type="checkbox" id="show_edges" checked> element edges</label>
+  </div>
+
+  <div class="info" id="stats"></div>
+  <canvas class="chart" id="chart"></canvas>
+</div>
+
+<div id="legend"><span class="label"></span><span class="min"></span><div class="bar"></div><span class="max"></span></div>
+<div id="hint">drag&nbsp;to&nbsp;pan&nbsp;· scroll&nbsp;or&nbsp;pinch&nbsp;to&nbsp;zoom</div>
+
+<script src="viewer.js"></script>
+<script src="femto_examples.js"></script>
+<script>
+"use strict";
+
+// A 50 mm coupon with a sharp notch cut in from its left edge, meshed with
+// quadratic triangles graded toward the notch tip (fracture_specimen.msh,
+// fetched into the module's filesystem).  The two pins above and
+// below the notch are pulled apart in load steps, each solved by Newton's
+// method with the consistent tangent.  The reaction at the upper pin against
+// the opening is the curve at the bottom of the panel: straight for the linear
+// material, stiffening for the neo-Hookean one.
+
+const viewer = new Viewer(document.getElementById("canvas"), "2d");
+let wasm = null, sim = null, geometry = null, layer = null;
+let peakStress = 1, playing = false, triangles = 0;
+
+const values = sliders(id => { if (id === "scale") { redraw(); } else { rebuild(); } },
+                       { nu: v => v.toFixed(2), opening: v => v.toFixed(1) });
+const material = buttonGroup(["btn_linear", "btn_neo"], () => rebuild());
+const state = buttonGroup(["btn_strain", "btn_stress"], () => rebuild());
+document.getElementById("show_edges").addEventListener("change", e => { if (layer) layer.edges = e.target.checked; });
+document.getElementById("btn_play").addEventListener("click", () => {
+  if (sim.stepCount() >= values().loadSteps) { rebuild(); }
+  playing = true;
+});
+document.getElementById("btn_reset").addEventListener("click", () => { playing = false; rebuild(); });
+
+function redraw() {
+  if (!geometry) return;
+  const q = values();
+  geometry.deform(sim.displacement(), q.scale).cellScalar(sim.vonMises());
+  const [, hi] = geometry.range();
+  peakStress = Math.max(peakStress, hi);
+  legend(viewer, 0, peakStress, "von Mises", v => v.toFixed(0) + " MPa");
+}
+
+function showStats(ms) {
+  const q = values();
+  const curve = sim.curve(), last = curve.length - 1;
+  document.getElementById("stats").innerHTML =
+    `${triangles.toLocaleString()} triangles · step <b>${sim.stepCount()} / ${q.loadSteps}</b> · opening ${curve[last - 1].toFixed(2)} mm\n` +
+    `reaction <b>${curve[last].toFixed(1)} N/mm</b> · peak von Mises ${peakStress.toFixed(0)} MPa\n` +
+    `${sim.newtonIterations()} Newton iterations, residual ${sim.residualNorm().toExponential(1)}` +
+    (ms === undefined ? "" : `\nlast step ${ms.toFixed(0)} ms`);
+
+  const x = [], y = [];
+  for (let k = 0; k < curve.length; k += 2) { x.push(curve[k]); y.push(curve[k + 1]); }
+  chart(document.getElementById("chart"), [{ x, y, color: "#e8a838" }, { x, y, color: "#e8a838", dots: true }],
+        { xlabel: "pin opening (mm)", ylabel: "reaction (N/mm)", xrange: [0, q.opening] });
+}
+
+const rebuild = runner(async () => {
+  await loadMesh(wasm, "fracture_specimen.msh");
+  const q = values();
+  playing = false;
+  if (sim) sim.delete();
+  sim = new wasm.FractureSpecimen({ material: material(), state: state(),
+                                    E: q.E, nu: q.nu, opening: q.opening, loadSteps: q.loadSteps });
+  peakStress = 1;
+  const nodes = sim.nodes(), cells = sim.cells();
+  triangles = cells.length / 3;
+  const { facets, cellIds } = cellFacets(cells, 3);
+  viewer.clear();
+  geometry = new Geometry(nodes, 2, facets, cellIds);
+  layer = viewer.add(geometry, { scalar: true, edges: document.getElementById("show_edges").checked, edgeColor: [0.16, 0.17, 0.2] });
+  viewer.fit(geometry.positions, 1.15);
+  redraw();
+  showStats();
+});
+
+createFemtoExamples().then(module => {
+  wasm = module;
+  document.getElementById("loading").remove();
+  document.getElementById("panel").hidden = false;
+  rebuild();
+  viewer.start(() => {
+    if (!playing) return;
+    if (sim.stepCount() >= values().loadSteps) { playing = false; return; }
+    const t0 = performance.now();
+    sim.step();
+    const ms = performance.now() - t0;
+    redraw();
+    showStats(ms);
+  });
+}).catch(reportLoadFailure);
+</script>
+</body>
+</html>

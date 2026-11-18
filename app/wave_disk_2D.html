@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>femto — absorbing boundaries</title>
+<link rel="stylesheet" href="viewer.css">
+<!-- The modules are multithreaded (femto's thread pool and the sparse solver
+     run on Web Workers), which needs SharedArrayBuffer, which browsers only
+     give a cross-origin-isolated page.  Where the host cannot send the
+     COOP/COEP headers itself (GitHub Pages), this service worker adds them and
+     reloads the page once; it exits early when the server already does.  Keep
+     it same-origin and at the END of <head>. -->
+<script src="enable-threads.js"></script>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+<div id="loading">loading femto.wasm …</div>
+
+<div id="panel" hidden>
+  <h1>pressure pulse in a disk <span>— 2D acoustics, absorbing boundaries</span></h1>
+
+  <div class="block">
+    <label>boundary of the finite element disk</label>
+    <div class="button-row">
+      <button id="btn_wall">hard wall</button>
+      <button id="btn_abc">absorbing</button>
+      <button id="btn_pml" class="active">PML ring</button>
+    </div>
+    <label>elements</label>
+    <div class="button-row">
+      <button id="btn_tri" class="active">triangles</button>
+      <button id="btn_quad">quadrilaterals</button>
+    </div>
+  </div>
+
+  <div class="row"><label>element size 1/<output id="resolution_out"></output></label>
+    <input type="range" id="resolution" min="4" max="6" step="1" value="5"></div>
+  <div class="row"><label>pulse width <output id="width_out"></output></label>
+    <input type="range" id="width" min="0.06" max="0.2" step="0.02" value="0.1"></div>
+  <div class="row" id="layers_row"><label>PML layers <output id="layers_out"></output> elements across</label>
+    <input type="range" id="layers" min="2" max="24" step="1" value="8"></div>
+
+  <div class="block">
+    <div class="button-row">
+      <button id="btn_play" class="active">pause</button>
+      <button id="btn_reset">clear</button>
+    </div>
+    <label class="check"><input type="checkbox" id="show_edges"> element edges</label>
+  </div>
+
+  <div class="info" id="stats"></div>
+  <canvas class="chart" id="chart"></canvas>
+  <div class="info">rms difference from the analytic field inside the disk, log₁₀</div>
+</div>
+
+<div id="legend"><span class="label"></span><span class="min"></span><div class="bar"></div><span class="max"></span></div>
+<div id="hint">left: analytic (whole plane) · right: finite element · click in either disk to set off a pulse · drag to pan · scroll to zoom</div>
+
+<script src="viewer.js"></script>
+<script src="femto_examples.js"></script>
+<script>
+"use strict";
+
+// A pressure pulse in the unit disk.  On the left, the analytic solution of
+// the wave equation on the whole plane: the pulse spreads out and leaves,
+// never to return.  On the right, the finite element solution on a mesh
+// that has to stop at the rim: a hard wall echoes the pulse back, the
+// first-order absorbing condition lets the head-on part leave and reflects
+// what arrives at grazing angles, and a ring of perfectly matched layer
+// elements soaks up nearly all of it.  Both fields are driven by the same
+// pulses, so the difference is the boundary's doing.
+
+const viewer = new Viewer(document.getElementById("canvas"), "2d");
+viewer.palette = "diverging";
+let wasm = null, sim = null, left = null, right = null, ring = null, ringLayer = null;
+let playing = true, sources = [], history = [], D = 0, frame = 0;
+
+const SCALE = 0.1;    // the color range, ± this
+// any change of mesh, boundary or pulse starts over from rest
+const values = sliders(() => rebuild(), { resolution: v => String(2 ** v), width: v => v.toFixed(2) });
+const boundary = buttonGroup(["btn_wall", "btn_abc", "btn_pml"], () => rebuild(), 2);
+const elements = buttonGroup(["btn_tri", "btn_quad"], () => rebuild());
+document.getElementById("show_edges").addEventListener("change", () => refresh());
+document.getElementById("btn_reset").addEventListener("click", () => rebuild());
+const playButton = document.getElementById("btn_play");
+playButton.addEventListener("click", () => {
+  playing = !playing;
+  playButton.textContent = playing ? "pause" : "play";
+  playButton.classList.toggle("active", playing);
+});
+
+// a click (not a drag) in either disk sets off a pulse there
+const canvas = document.getElementById("canvas");
+let pressed = null;
+canvas.addEventListener("pointerdown", e => { pressed = [e.clientX, e.clientY]; });
+canvas.addEventListener("pointerup", e => {
+  if (!pressed || Math.hypot(e.clientX - pressed[0], e.clientY - pressed[1]) > 4 || !sim) { pressed = null; return; }
+  pressed = null;
+  const [wx, wy] = viewer.worldAt(e.clientX, e.clientY);
+  const x = wx < 0 ? wx + D : wx - D, y = wy;
+  if (Math.hypot(x, y) >= 1) return;
+  const q = values();
+  sources.push({ x, y, t: sim.time(), width: q.width });
+  sim.pulse(x, y, q.width);
+  refresh();
+});
+
+function refresh() {
+  if (!sim) return;
+  left.vertexScalar(sim.exact());
+  right.vertexScalar(sim.pressure());
+  if (ring) ring.vertexScalar(sim.pressure());
+  legend(viewer, -SCALE, SCALE, "pressure", v => v.toFixed(2));
+  const edges = document.getElementById("show_edges").checked;
+  for (const layer of viewer.layers) { if (layer.object === left || layer.object === right) layer.edges = edges; }
+  if (ringLayer) ringLayer.edges = edges;
+
+  const err = sources.length ? sim.error() : 0;
+  if (sources.length && (frame++ % 2 === 0)) { history.push([sim.time(), err]); if (history.length > 600) history.shift(); }
+  const names = ["hard wall", "absorbing condition", "PML ring"];
+  document.getElementById("stats").innerHTML =
+    `${(right.corner.length / (elements() ? 4 : 3)).toLocaleString()} ${elements() ? "quadrilaterals" : "triangles"}` +
+    (ring ? `, ${(ring.corner.length / (elements() ? 4 : 3)).toLocaleString()} of them in the ring ${sim.layerThickness().toFixed(2)} thick` : "") + `\n` +
+    `${names[boundary()]} · dt = ${sim.timeStep().toPrecision(3)}\n` +
+    `t = <b>${sim.time().toFixed(2)}</b>` + (sources.length ? ` · ${sources.length} pulse${sources.length > 1 ? "s" : ""} · rms error <b>${err.toExponential(2)}</b>` : ` · click to set off a pulse`);
+  chart(document.getElementById("chart"), [{ x: history.map(h => h[0]), y: history.map(h => Math.log10(Math.max(h[1], 1e-6))), color: "#e8a838" }],
+        { xlabel: "t", ylabel: "log₁₀ error", yrange: [-5, 0], xrange: [0, Math.max(1, sim.time())] });
+}
+
+// a new mesh at rest, with no pulses
+function rebuild() {
+  const q = values();
+  sources = [];
+  if (sim) sim.delete();
+  document.getElementById("layers_row").style.display = boundary() === 2 ? "" : "none";
+  sim = new wasm.WaveDisk({ elementType: elements(), boundary: boundary(), resolution: q.resolution, c: 1, cfl: 0.25, pmlLayers: q.layers, pmlDecay: 1.4 });
+  history = []; frame = 0;
+
+  const nodes = sim.nodes(), cells = sim.cells(), region = sim.region(), nv = elements() ? 4 : 3;
+  const L = sim.layerThickness();
+  D = 1.15 + L;
+  const shifted = dx => { const out = new Float64Array(nodes); for (let i = 0; i < out.length; i += 2) out[i] += dx; return out; };
+  const physical = cellFacets(cells, nv, e => region[e] === 0), pml = cellFacets(cells, nv, e => region[e] === 1);
+  viewer.clear();
+  left = new Geometry(shifted(-D), 2, physical.facets, physical.cellIds);
+  right = new Geometry(shifted(D), 2, physical.facets, physical.cellIds);
+  viewer.add(left, { scalar: true, edgeColor: [0.16, 0.17, 0.2] });
+  viewer.add(right, { scalar: true, edgeColor: [0.16, 0.17, 0.2] });
+  // the ring shows the field too (it is still the wave equation in there,
+  // stretched), under a translucent shade so it reads as the added part; a
+  // stroke at r = 1 marks where the disk of interest ends
+  ring = ringLayer = null;
+  if (pml.cellIds.length) {
+    ring = new Geometry(shifted(D), 2, pml.facets, pml.cellIds);
+    ringLayer = viewer.add(ring, { scalar: true, edgeColor: [0.16, 0.17, 0.2] });
+    viewer.add(ring, { color: [0.0, 0.0, 0.0], alpha: 0.3 });
+  }
+  const strip = [], N = 180, w = 0.006;
+  for (let k = 0; k < N; k++) {
+    const a0 = 2 * Math.PI * k / N, a1 = 2 * Math.PI * (k + 1) / N;
+    for (const [a, r] of [[a0, 1 - w], [a1, 1 - w], [a1, 1 + w], [a0, 1 + w]]) strip.push(D + r * Math.cos(a), r * Math.sin(a));
+  }
+  const stripFacets = new Uint32Array(5 * N);
+  for (let k = 0; k < N; k++) stripFacets.set([4, 4 * k, 4 * k + 1, 4 * k + 2, 4 * k + 3], 5 * k);
+  viewer.add(new Geometry(new Float64Array(strip), 2, stripFacets), { color: [0.08, 0.09, 0.11] });
+  viewer.fit(new Float32Array([-D - 1, -1 - L, 0, D + 1 + L, 1 + L, 0]), 1.06);
+  refresh();
+}
+
+createFemtoExamples().then(module => {
+  wasm = module;
+  document.getElementById("loading").remove();
+  document.getElementById("panel").hidden = false;
+  rebuild();
+  viewer.start(() => {
+    if (!playing || !sources.length) return;
+    sim.step();
+    refresh();
+  });
+}).catch(reportLoadFailure);
+</script>
+</body>
+</html>

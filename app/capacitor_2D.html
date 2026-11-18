@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>femto — parallel-plate capacitor</title>
+<link rel="stylesheet" href="viewer.css">
+<!-- The modules are multithreaded (femto's thread pool and the sparse solver
+     run on Web Workers), which needs SharedArrayBuffer, which browsers only
+     give a cross-origin-isolated page.  Where the host cannot send the
+     COOP/COEP headers itself (GitHub Pages), this service worker adds them and
+     reloads the page once; it exits early when the server already does.  Keep
+     it same-origin and at the END of <head>. -->
+<script src="enable-threads.js"></script>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+<div id="loading">loading femto.wasm …</div>
+
+<div id="panel" hidden>
+  <h1>parallel-plate capacitor <span>— 2D electrostatics</span></h1>
+
+  <div class="row"><label>plate width <output id="plateWidth_out"></output> mm</label>
+    <input type="range" id="plateWidth" min="4" max="30" step="1" value="16"></div>
+  <div class="row"><label>plate thickness <output id="plateThickness_out"></output> mm</label>
+    <input type="range" id="plateThickness" min="1" max="4" step="0.5" value="1"></div>
+  <div class="row"><label>gap <output id="gap_out"></output> mm</label>
+    <input type="range" id="gap" min="1" max="12" step="0.5" value="4"></div>
+  <div class="row"><label>dielectric width <output id="dielectricWidth_out"></output> mm</label>
+    <input type="range" id="dielectricWidth" min="0" max="30" step="1" value="8"></div>
+  <div class="row"><label><span>dielectric ε<sub>r</sub></span> <output id="epsR_out"></output></label>
+    <input type="range" id="epsR" min="1" max="12" step="0.5" value="4"></div>
+  <div class="row"><label>voltage <output id="voltage_out"></output> V</label>
+    <input type="range" id="voltage" min="0.5" max="10" step="0.5" value="1"></div>
+  <div class="row"><label>element size <output id="h_out"></output> mm</label>
+    <input type="range" id="h" min="0.4" max="2" step="0.1" value="0.8"></div>
+
+  <div class="block">
+    <label>color by</label>
+    <div class="button-row">
+      <button id="btn_voltage" class="active">voltage</button>
+      <button id="btn_field">|E|</button>
+    </div>
+    <label class="check"><input type="checkbox" id="show_arrows" checked> electric field arrows</label>
+    <label class="check"><input type="checkbox" id="show_edges"> element edges</label>
+  </div>
+
+  <div class="info" id="stats"></div>
+</div>
+
+<div id="legend"><span class="label"></span><span class="min"></span><div class="bar"></div><span class="max"></span></div>
+<div id="hint">drag&nbsp;to&nbsp;pan&nbsp;· scroll&nbsp;or&nbsp;pinch&nbsp;to&nbsp;zoom</div>
+
+<script src="viewer.js"></script>
+<script src="femto_examples.js"></script>
+<script>
+"use strict";
+
+// The plates are elements of permittivity 1e6, each pinned to its voltage at a
+// single node, so the solution shows them floating to a common potential.  The
+// capacitance comes from the energy of the whole field, fringing included, and
+// is compared against the textbook parallel-plate value.
+
+const BOX = { Lx: 40, Ly: 30 };
+const viewer = new Viewer(document.getElementById("canvas"), "2d");
+let wasm = null, sim = null;
+let mesh = null;                 // { nodes, cells, region }
+let field = null, plates = null, dielectric = null, arrowLayer = null;
+const arrowLines = new Lines(new Float32Array(0));
+
+const values = sliders(() => rerun(), { epsR: v => v.toFixed(1) });
+const colorBy = buttonGroup(["btn_voltage", "btn_field"], () => recolor());
+document.getElementById("show_arrows").addEventListener("change", e => { if (arrowLayer) arrowLayer.visible = e.target.checked; });
+document.getElementById("show_edges").addEventListener("change", e => { if (field) field.edges = e.target.checked; });
+
+// E = -grad V per cell, from the four corners of the (axis-aligned) quad
+function cellField(nodes, cells, V) {
+  const n = cells.length / 4, E = new Float64Array(2 * n), mag = new Float64Array(n);
+  for (let e = 0; e < n; e++) {
+    const v = [0, 1, 2, 3].map(j => cells[4 * e + j]);
+    const dx = nodes[2 * v[1]] - nodes[2 * v[0]], dy = nodes[2 * v[3] + 1] - nodes[2 * v[0] + 1];
+    E[2 * e] = -((V[v[1]] + V[v[2]]) - (V[v[0]] + V[v[3]])) / (2 * dx);
+    E[2 * e + 1] = -((V[v[2]] + V[v[3]]) - (V[v[0]] + V[v[1]])) / (2 * dy);
+    mag[e] = Math.hypot(E[2 * e], E[2 * e + 1]);
+  }
+  return { E, mag };
+}
+
+// a robust upper end for the field color scale and arrow lengths: the
+// permittivity jump at the plate corners makes the true maximum useless
+function quantile(values, q) {
+  const sorted = Float64Array.from(values).sort();
+  return sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
+}
+
+let solution = null;
+
+function recolor() {
+  if (!solution) return;
+  const q = values();
+  if (colorBy() === 0) {
+    field.scalar = true;
+    solution.geometry.vertexScalar(solution.V);
+    legend(viewer, -0.5 * q.voltage, 0.5 * q.voltage, "voltage", v => v.toFixed(2) + " V");
+  } else {
+    field.scalar = true;
+    solution.geometry.cellScalar(solution.mag);
+    legend(viewer, 0, solution.fieldScale, "|E|", v => v.toPrecision(2) + " V/mm");
+  }
+}
+
+const rerun = runner(() => {
+  const q = values();
+  const t0 = performance.now();
+  if (sim) sim.delete();
+  sim = new wasm.Capacitor({ Lx: BOX.Lx, Ly: BOX.Ly, plateWidth: q.plateWidth, plateThickness: q.plateThickness,
+                             gap: q.gap, dielectricWidth: q.dielectricWidth, epsR: q.epsR, voltage: q.voltage, h: q.h });
+  const setup = performance.now() - t0;
+  const t1 = performance.now();
+  sim.solve();
+  const solve = performance.now() - t1;
+
+  const nodes = sim.nodes(), cells = sim.cells(), region = sim.region(), V = sim.voltage();
+  const { E, mag } = cellField(nodes, cells, V);
+  const fieldScale = Math.max(1e-12, quantile(mag, 0.98));
+
+  // one layer for the solution, two translucent ones outlining the materials
+  viewer.clear();
+  const all = cellFacets(cells, 4);
+  const geometry = new Geometry(nodes, 2, all.facets, all.cellIds);
+  field = viewer.add(geometry, { scalar: true, edges: document.getElementById("show_edges").checked, edgeColor: [0.16, 0.17, 0.2] });
+  const conductor = cellFacets(cells, 4, e => region[e] === 1 || region[e] === 2);
+  plates = viewer.add(new Geometry(nodes, 2, conductor.facets, conductor.cellIds), { color: [0.85, 0.85, 0.9], alpha: 0.55, fill: true });
+  if (q.dielectricWidth > 0) {
+    const block = cellFacets(cells, 4, e => region[e] === 3);
+    // an outline rather than a wash, so the field inside the block stays readable
+    dielectric = viewer.add(new Geometry(nodes, 2, block.facets, block.cellIds),
+                            { color: [0.35, 0.55, 0.95], alpha: 0.12, edges: true, edgeColor: [0.45, 0.72, 1.0] });
+  }
+
+  // arrows at a subset of the cells, about 40 across the box
+  const centers = centroids(nodes, 2, cells, 4);
+  const stride = Math.max(1, Math.round(BOX.Lx / q.h / 40));
+  const px = [], pv = [];
+  for (let e = 0; e < mag.length; e++) {
+    const i = Math.round((centers[2 * e] - 0.5 * q.h) / q.h), j = Math.round((centers[2 * e + 1] - 0.5 * q.h) / q.h);
+    if (i % stride || j % stride) continue;
+    px.push(centers[2 * e], centers[2 * e + 1]);
+    pv.push(E[2 * e], E[2 * e + 1]);
+  }
+  const span = stride * q.h;
+  arrowLines.set(arrows(new Float64Array(px), new Float64Array(pv), 2, m => 0.9 * span * Math.min(1, m / fieldScale)));
+  arrowLayer = viewer.add(arrowLines, { color: [0.95, 0.78, 0.35], visible: document.getElementById("show_arrows").checked });
+
+  solution = { geometry, V, mag, fieldScale };
+  viewer.fit(geometry.positions, 1.05);
+  recolor();
+
+  // the plates only exist as whole elements, so the example snaps their
+  // geometry to the mesh: report what it actually built
+  const g = sim.geometry();
+  const C = sim.capacitance(), ideal = sim.idealCapacitance();
+  document.getElementById("stats").innerHTML =
+    `${(cells.length / 4).toLocaleString()} quadrilaterals · ${V.length.toLocaleString()} nodes\n` +
+    `${g.h.toFixed(2)} mm cells: gap ${g.gap.toFixed(2)}, plates ${g.plateWidth.toFixed(1)} × ${g.plateThickness.toFixed(2)}, ` +
+    `dielectric ${g.dielectricWidth.toFixed(1)} mm\n` +
+    `capacitance <b>${C.toFixed(2)} ε₀</b> per unit depth\n` +
+    `ideal parallel plate ${ideal.toFixed(2)} ε₀ (fringing +${(C - ideal).toFixed(2)})\n` +
+    `field energy ${sim.energy().toPrecision(3)} ε₀ V²\n` +
+    `mesh ${setup.toFixed(0)} ms · solve ${solve.toFixed(0)} ms`;
+});
+
+createFemtoExamples().then(module => {
+  wasm = module;
+  document.getElementById("loading").remove();
+  document.getElementById("panel").hidden = false;
+  rerun();
+  viewer.start();
+}).catch(reportLoadFailure);
+</script>
+</body>
+</html>

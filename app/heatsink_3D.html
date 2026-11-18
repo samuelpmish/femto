@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>femto — TO-220 on a heatsink</title>
+<link rel="stylesheet" href="viewer.css">
+<!-- The modules are multithreaded (femto's thread pool and the sparse solver
+     run on Web Workers), which needs SharedArrayBuffer, which browsers only
+     give a cross-origin-isolated page.  Where the host cannot send the
+     COOP/COEP headers itself (GitHub Pages), this service worker adds them and
+     reloads the page once; it exits early when the server already does.  Keep
+     it same-origin and at the END of <head>. -->
+<script src="enable-threads.js"></script>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+<div id="loading">loading femto.wasm …</div>
+
+<div id="panel" hidden>
+  <h1>TO-220 regulator <span>— 3D heat conduction</span></h1>
+
+  <div class="block">
+    <label>heatsink</label>
+    <div class="button-row">
+      <button id="btn_bare">none</button>
+      <button id="btn_clip" class="active">clip-on</button>
+      <button id="btn_channel">bolt-on</button>
+      <button id="btn_multiwatt">multiwatt</button>
+    </div>
+  </div>
+
+  <div class="row"><label>dissipated power <output id="power_out"></output> W</label>
+    <input type="range" id="power" min="0.25" max="4" step="0.25" value="2"></div>
+  <div class="row"><label>film coefficient <output id="film_out"></output> W/m²K</label>
+    <input type="range" id="film" min="25" max="150" step="5" value="25"></div>
+  <div class="info" id="film_note" style="white-space:normal">convection and radiation together, on every exposed face</div>
+  <div class="row"><label>air temperature <output id="TAir_out"></output> °C</label>
+    <input type="range" id="TAir" min="10" max="45" step="1" value="25"></div>
+
+  <div class="block">
+    <label>color by</label>
+    <div class="button-row">
+      <button id="btn_temperature" class="active">temperature</button>
+      <button id="btn_materials">materials</button>
+    </div>
+    <div class="row"><label>cut away <output id="clip_out"></output>%</label>
+      <input type="range" id="clip" min="0" max="100" step="2" value="100"></div>
+    <label class="check"><input type="checkbox" id="show_edges"> element edges</label>
+  </div>
+
+  <div class="info" id="stats"></div>
+</div>
+
+<div id="legend"><span class="label"></span><span class="min"></span><div class="bar"></div><span class="max"></span></div>
+<div id="hint">drag&nbsp;to&nbsp;orbit&nbsp;· shift-drag&nbsp;or&nbsp;two-finger&nbsp;drag&nbsp;to&nbsp;pan&nbsp;· scroll&nbsp;or&nbsp;pinch&nbsp;to&nbsp;zoom</div>
+
+<script src="viewer.js"></script>
+<script src="femto_examples.js"></script>
+<script>
+"use strict";
+
+// The package is meshed as it is built: a copper tab with its mounting hole,
+// the epoxy body molded around it, the silicon die soldered to the tab, and
+// three leads.  The die dissipates the regulator's power and every exposed
+// face loses heat to the air, so the whole junction-to-ambient path is in the
+// model.  Switching heatsinks loads a different mesh; the geometry is fixed in
+// each one, since they stand for real parts rather than a parameterized shape.
+
+// aluminum, copper, silicon, copper lead, epoxy — the regions the example tags
+const MATERIALS = [
+  { name: "aluminum heatsink", color: [0.72, 0.74, 0.78] },
+  { name: "copper tab", color: [0.82, 0.50, 0.24] },
+  { name: "silicon die", color: [0.30, 0.55, 0.85] },
+  { name: "copper leads", color: [0.82, 0.50, 0.24] },
+  { name: "epoxy body", color: [0.20, 0.19, 0.21] }
+];
+
+const viewer = new Viewer(document.getElementById("canvas"), "3d");
+let wasm = null, sim = null, solution = null;
+
+const airflow = v => v < 40 ? "still air" : v <= 100 ? "slow air current" : "fast air current";
+const values = sliders(() => rerun(), { power: v => v.toFixed(2), film: v => `${v.toFixed(0)} (${airflow(v)})` });
+const design = buttonGroup(["btn_bare", "btn_clip", "btn_channel", "btn_multiwatt"], () => rerun(), 1);
+const colorBy = buttonGroup(["btn_temperature", "btn_materials"], () => redraw());
+document.getElementById("show_edges").addEventListener("change", () => redraw());
+document.getElementById("clip").addEventListener("input", () => redraw());
+
+// the drawn surface: the outside of the cells the cut-away keeps, colored by
+// temperature, or one solid per material
+function redraw() {
+  if (!solution) return;
+  const { nodes, cells, region, T, centers, range, xMin, xMax } = solution;
+  const edges = document.getElementById("show_edges").checked;
+  const xCut = xMin + (+document.getElementById("clip").value / 100) * (xMax - xMin) + 1e-9;
+  const keep = e => centers[3 * e] <= xCut;
+
+  viewer.clear();
+  if (colorBy() === 0) {
+    const { facets, cellIds } = cellBoundary(cells, 4, keep);
+    const geometry = new Geometry(nodes, 3, facets, cellIds).vertexScalar(T);
+    viewer.add(geometry, { scalar: true, edges, edgeColor: [0.12, 0.13, 0.16] });
+    legend(viewer, range[0], range[1], "temperature", v => v.toFixed(1) + " °C");
+    if (!solution.fitted) { viewer.fit(geometry.positions); solution.fitted = true; }
+  } else {
+    document.getElementById("legend").style.display = "none";
+    for (let m = 0; m < MATERIALS.length; m++) {
+      const { facets, cellIds } = cellBoundary(cells, 4, e => region[e] === m && keep(e));
+      if (!cellIds.length) continue;
+      const geometry = new Geometry(nodes, 3, facets, cellIds);
+      viewer.add(geometry, { color: MATERIALS[m].color, edges, edgeColor: [0.12, 0.13, 0.16] });
+      if (!solution.fitted) { viewer.fit(geometry.positions); solution.fitted = true; }
+    }
+  }
+}
+
+const rerun = runner(async () => {
+  const q = values();
+  const status = document.getElementById("stats");
+  const file = wasm.HeatSink.meshFile(design());
+  status.textContent = `loading ${file} …`;
+  await loadMesh(wasm, file);
+
+  const t0 = performance.now();
+  if (sim) sim.delete();
+  sim = new wasm.HeatSink({ design: design(), power: q.power, hAir: q.film * 1e-6, TAir: q.TAir });
+  const setup = performance.now() - t0;
+  const t1 = performance.now();
+  sim.solve();
+  const solve = performance.now() - t1;
+
+  const nodes = sim.nodes(), cells = sim.cells(), region = sim.region(), T = sim.temperature();
+  const centers = centroids(nodes, 3, cells, 4);
+  let xMin = Infinity, xMax = -Infinity, lo = Infinity, hi = -Infinity;
+  for (let e = 0; e < cells.length / 4; e++) { xMin = Math.min(xMin, centers[3 * e]); xMax = Math.max(xMax, centers[3 * e]); }
+  for (const t of T) { lo = Math.min(lo, t); hi = Math.max(hi, t); }
+  solution = { nodes, cells, region, T, centers, xMin, xMax, range: [lo, hi], fitted: false };
+  redraw();
+
+  // silicon is typically rated to 125 °C: say how much power this heatsink
+  // would allow at that limit, so the sliders have something to aim at
+  const R = sim.thermalResistance(), Tj = sim.junctionTemperature();
+  const allowed = (125 - q.TAir) / R;
+  status.innerHTML =
+    `${(cells.length / 4).toLocaleString()} tetrahedra · ${T.length.toLocaleString()} nodes\n` +
+    `${sim.surfaceArea().toFixed(0)} mm² losing heat to the air\n` +
+    `junction at <b${Tj > 125 ? ' style="color:#e87c7c"' : ''}>${Tj.toFixed(1)} °C</b>, peak ${sim.maxTemperature().toFixed(1)} °C` +
+    (Tj > 125 ? ` — over the 125 °C silicon limit` : ``) + `\n` +
+    `junction to ambient <b>${R.toFixed(1)} K/W</b>: ${allowed.toFixed(1)} W would reach 125 °C\n` +
+    `mesh ${setup.toFixed(0)} ms · solve ${solve.toFixed(0)} ms`;
+});
+
+createFemtoExamples().then(module => {
+  wasm = module;
+  document.getElementById("loading").remove();
+  document.getElementById("panel").hidden = false;
+  rerun();
+  viewer.start();
+}).catch(reportLoadFailure);
+</script>
+</body>
+</html>

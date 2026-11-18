@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>femto — induction coil and ferrite core</title>
+<link rel="stylesheet" href="viewer.css">
+<!-- The modules are multithreaded (femto's thread pool and the sparse solver
+     run on Web Workers), which needs SharedArrayBuffer, which browsers only
+     give a cross-origin-isolated page.  Where the host cannot send the
+     COOP/COEP headers itself (GitHub Pages), this service worker adds them and
+     reloads the page once; it exits early when the server already does.  Keep
+     it same-origin and at the END of <head>. -->
+<script src="enable-threads.js"></script>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+<div id="loading">loading femto.wasm …</div>
+
+<div id="panel" hidden>
+  <h1>induction coil <span>— 3D magnetostatics</span></h1>
+
+  <div class="row"><label>coil current <output id="current_out"></output> A</label>
+    <input type="range" id="current" min="10" max="200" step="10" value="60"></div>
+  <div class="row"><label><span>core μ<sub>r</sub></span> <output id="muIndex_out"></output></label>
+    <input type="range" id="muIndex" min="0" max="4" step="1" value="3"></div>
+
+  <div class="block">
+    <div class="button-row"><button id="btn_solve">solve</button></div>
+    <label class="check"><input type="checkbox" id="show_slice" checked> field on the y = 0 slice</label>
+    <label class="check"><input type="checkbox" id="show_arrows" checked> B arrows on the slice</label>
+    <label class="check"><input type="checkbox" id="show_parts" checked> copper and ferrite</label>
+    <label class="check"><input type="checkbox" id="show_edges"> element edges</label>
+  </div>
+
+  <div class="info" id="stats"></div>
+</div>
+
+<div id="legend"><span class="label"></span><span class="min"></span><div class="bar"></div><span class="max"></span></div>
+<div id="hint">drag&nbsp;to&nbsp;orbit&nbsp;· shift-drag&nbsp;or&nbsp;two-finger&nbsp;drag&nbsp;to&nbsp;pan&nbsp;· scroll&nbsp;or&nbsp;pinch&nbsp;to&nbsp;zoom</div>
+
+<script src="viewer.js"></script>
+<script src="femto_examples.js"></script>
+<script>
+"use strict";
+
+// Six turns of thick copper around a ferrite rod, in a box of air.  The vector
+// potential is an H(curl) field on the tetrahedra, the current runs along the
+// wire, and B = curl A.  The mesh (built by tools/generate_example_meshes.py
+// and filled by fTetWild) is graded: a couple of millimeters through the
+// copper and the ferrite, where the field has to be resolved, and centimeters
+// out in the far air where it does not.
+
+const MU = [1, 10, 100, 1000, 2000];
+const ARROW_GRID = 26;       // arrows are sampled on a grid, not per element
+const viewer = new Viewer(document.getElementById("canvas"), "3d");
+viewer.camera.yaw = -0.5 * Math.PI;      // look straight at the cut plane, z up
+viewer.camera.pitch = 0.0;
+let wasm = null, sim = null, mesh = null, solved = false, needsFit = true;
+const arrowLines = new Lines(new Float32Array(0));
+
+const values = sliders(() => rebuild(), { muIndex: v => String(MU[v]), current: v => v.toFixed(0) });
+for (const id of ["show_slice", "show_arrows", "show_parts", "show_edges"]) {
+  document.getElementById(id).addEventListener("change", () => draw());
+}
+document.getElementById("btn_solve").addEventListener("click", () => solve());
+
+// core and coil as solids, and after a solve the slab of cells across y = 0
+// colored by |B| with arrows along it
+function draw() {
+  if (!sim) return;
+  const show = id => document.getElementById(id).checked;
+  const edges = show("show_edges");
+  const { nodes, cells, region, centers } = mesh;
+
+  viewer.clear();
+  if (solved && show("show_slice")) {
+    const B = sim.B();
+    const mag = new Float64Array(cells.length / 4);
+    for (let e = 0; e < mag.length; e++) mag[e] = Math.hypot(B[3 * e], B[3 * e + 1], B[3 * e + 2]);
+
+    // the cells the plane y = 0 actually cuts, rather than a slab of a fixed
+    // thickness: the far air has centimeter elements and the copper has
+    // millimeter ones, so no one thickness suits both
+    const slice = cellBoundary(cells, 4, e => mesh.crosses[e]);
+    const geometry = new Geometry(nodes, 3, slice.facets, slice.cellIds).cellScalar(mag);
+    viewer.add(geometry, { scalar: true, lit: false, edges, edgeColor: [0.16, 0.17, 0.2] });
+
+    // the top of the scale is a high quantile, not the peak: |B| in the corner
+    // of the ferrite is several times what the rest of the picture shows
+    const cut = [];
+    for (let e = 0; e < mag.length; e++) if (mesh.crosses[e]) cut.push(mag[e]);
+    cut.sort((a, b) => a - b);
+    const scale = cut[Math.floor(0.93 * cut.length)] || 1;
+    legend(viewer, 0, scale, "|B|", v => (v * 1e3).toFixed(0) + " mT");
+
+    if (show("show_arrows")) {
+      // one arrow per grid cell, otherwise they pile up where the mesh is fine
+      const R = 1.05 * Math.max(mesh.extent[0], mesh.extent[2]);
+      const step = 2 * R / ARROW_GRID;
+      const best = new Map();
+      for (let e = 0; e < mag.length; e++) {
+        if (!mesh.crosses[e]) continue;
+        const i = Math.floor((centers[3 * e] + R) / step), k = Math.floor((centers[3 * e + 2] + R) / step);
+        const key = i * 1024 + k;
+        const cx = (i + 0.5) * step - R, cz = (k + 0.5) * step - R;
+        const d = Math.hypot(centers[3 * e] - cx, centers[3 * e + 2] - cz);
+        const prev = best.get(key);
+        if (!prev || d < prev.d) best.set(key, { e, d });
+      }
+      const px = [], pv = [];
+      for (const { e } of best.values()) {
+        px.push(centers[3 * e], 0, centers[3 * e + 2]);
+        pv.push(B[3 * e], B[3 * e + 1], B[3 * e + 2]);
+      }
+      arrowLines.set(arrows(new Float64Array(px), new Float64Array(pv), 3,
+                            m => 0.85 * step * Math.min(1, Math.sqrt(m / scale))));
+      viewer.add(arrowLines, { color: [0.98, 0.98, 1.0], depthTest: false });
+    }
+  }
+  if (show("show_parts")) {
+    const alpha = solved && show("show_slice") ? 0.35 : 1.0;
+    for (const [id, color] of [[1, [0.55, 0.55, 0.62]], [2, [0.85, 0.47, 0.20]]]) {
+      const part = cellBoundary(cells, 4, e => region[e] === id);
+      viewer.add(new Geometry(nodes, 3, part.facets, part.cellIds), { color, alpha, edges: edges && alpha === 1 });
+    }
+  }
+  if (needsFit && viewer.layers.length) {
+    viewer.fit(viewer.layers[0].object.positions, solved && show("show_slice") ? 1.02 : 1.5);
+    needsFit = false;
+  }
+}
+
+function stats(ms) {
+  const q = values();
+  const head = `${(mesh.cells.length / 4).toLocaleString()} tetrahedra · ${COUNTS.core.toLocaleString()} in the ferrite, ` +
+               `${COUNTS.coil.toLocaleString()} in the copper`;
+  if (!solved) {
+    document.getElementById("stats").innerHTML = head + "\npress solve (a few seconds)";
+    return;
+  }
+  document.getElementById("stats").innerHTML = head +
+    `\n${MU[q.muIndex]} × ${q.current} A × 6 turns` +
+    `\nB on the axis <b>${(sim.centerField() * 1e3).toFixed(1)} mT</b>` +
+    `\naveraged over the ferrite ${(sim.coreField() * 1e3).toFixed(1)} mT` +
+    `\npeak |B| ${(sim.maxField() * 1e3).toFixed(0)} mT` +
+    `\nthe same coil in air alone: ${(sim.solenoidEstimate() * 1e3).toFixed(1)} mT` +
+    `\nsolve ${(ms / 1000).toFixed(1)} s`;
+}
+
+const COUNTS = { core: 0, coil: 0 };
+
+const rebuild = runner(async () => {
+  document.getElementById("stats").textContent = "loading induction_coil.msh …";
+  await loadMesh(wasm, "induction_coil.msh");
+  const q = values();
+  if (sim) sim.delete();
+  sim = new wasm.Magnetostatics({ current: q.current, muR: MU[q.muIndex], gauge: 1e-6 });
+  if (!mesh) {
+    const nodes = sim.nodes(), cells = sim.cells(), region = sim.region();
+    const crosses = new Uint8Array(cells.length / 4);
+    const extent = [0, 0, 0];
+    for (let e = 0; e < crosses.length; e++) {
+      let lo = Infinity, hi = -Infinity;
+      for (let j = 0; j < 4; j++) {
+        const y = nodes[3 * cells[4 * e + j] + 1];
+        lo = Math.min(lo, y); hi = Math.max(hi, y);
+      }
+      crosses[e] = (lo <= 0 && hi >= 0) ? 1 : 0;
+    }
+    for (let i = 0; i < nodes.length; i += 3) {
+      for (let c = 0; c < 3; c++) extent[c] = Math.max(extent[c], Math.abs(nodes[i + c]));
+    }
+    mesh = { nodes, cells, region, centers: centroids(nodes, 3, cells, 4), crosses, extent };
+    COUNTS.core = region.reduce((n, r) => n + (r === 1), 0);
+    COUNTS.coil = region.reduce((n, r) => n + (r === 2), 0);
+  }
+  solved = false;
+  needsFit = true;
+  draw();
+  stats();
+});
+
+function solve() {
+  const button = document.getElementById("btn_solve");
+  button.disabled = true;
+  button.textContent = "solving…";
+  setTimeout(() => {
+    const t0 = performance.now();
+    sim.solve();
+    const ms = performance.now() - t0;
+    solved = true;
+    needsFit = true;
+    draw();
+    stats(ms);
+    button.disabled = false;
+    button.textContent = "solve";
+  }, 30);
+}
+
+createFemtoExamples().then(module => {
+  wasm = module;
+  document.getElementById("loading").remove();
+  document.getElementById("panel").hidden = false;
+  rebuild();
+  viewer.start();
+}).catch(reportLoadFailure);
+</script>
+</body>
+</html>
