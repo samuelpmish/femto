@@ -1,6 +1,7 @@
 # femto website
 
-Hugo site, deployed to GitHub Pages by `.github/workflows/pages.yml`.
+Hugo site, published to GitHub Pages from the `gh-pages` branch by `site/deploy.sh`
+(Settings > Pages > Source = "Deploy from a branch", `gh-pages`, `/`).
 
 ```
 content/             markdown pages (examples/<name>.md: front matter `app:` names the viewer)
@@ -18,3 +19,14 @@ mkdir -p site/static/app && cp -r build-web-mt/examples/html/. site/static/app/
 cp examples/html/enable-threads.js site/static/
 cd site && hugo server      # without the copy step the pages work, the iframes 404
 ```
+
+## publishing
+
+```sh
+cmake --build build-web-mt --target femto_examples_html   # if the C++ changed
+site/deploy.sh                                           # DRY=1 builds without pushing
+```
+
+The script stages the viewers, builds with `hugo --minify`, adds `CNAME` and `.nojekyll`,
+and force-pushes the result to `gh-pages` as one fresh commit, so the ~12 MB of wasm and
+meshes never accumulates in history.

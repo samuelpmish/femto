@@ -17,3 +17,4 @@ site/resources/**
 site/static/app/**
 site/static/enable-threads.js
 site/.hugo_build.lock
+site/public-dry/**
