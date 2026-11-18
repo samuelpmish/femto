@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ if .IsHome }}{{ site.Title }}{{ else }}{{ .Title }} · {{ site.Title }}{{ end }}</title>
+<link rel="stylesheet" href="{{ "css/site.css" | relURL }}">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+        onload="renderMathInElement(document.querySelector('main'), {delimiters: [{left: '\\[', right: '\\]', display: true}, {left: '$$', right: '$$', display: true}, {left: '\\(', right: '\\)', display: false}]})"></script>
+{{ if .Params.app }}
+<!-- the embedded viewer runs a threaded wasm module, which needs a cross-origin
+     isolated embedder; this service worker supplies the headers GitHub Pages
+     cannot (see examples/html/enable-threads.js).  Keep it last in <head>. -->
+<script src="{{ "enable-threads.js" | relURL }}"></script>
+{{ end }}
+</head>
+<body>
+<div class="layout">
+  {{ partial "sidebar.html" . }}
+  <main>
+    {{ block "main" . }}{{ end }}
+  </main>
+</div>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{{- $here := .RelPermalink -}}
+<nav class="sidebar">
+  <a class="brand" href="{{ "" | relURL }}">femto</a>
+  <ul>
+    <li><a href="{{ "" | relURL }}"{{ if .IsHome }} class="active"{{ end }}>Overview</a></li>
+    <li><a href="{{ "build/" | relURL }}"{{ if eq $here ("build/" | relURL) }} class="active"{{ end }}>Building</a></li>
+    <li><a href="{{ "examples/" | relURL }}"{{ if eq $here ("examples/" | relURL) }} class="active"{{ end }}>Examples</a>
+      <ul>
+      {{ range (site.GetPage "/examples").Pages.ByWeight }}
+        <li><a href="{{ .RelPermalink }}"{{ if eq $here .RelPermalink }} class="active"{{ end }}>{{ .Params.short | default .Title }}</a></li>
+      {{ end }}
+      </ul>
+    </li>
+    <li><a href="https://github.com/samuelpmish/femto">GitHub ↗</a></li>
+  </ul>
+</nav>

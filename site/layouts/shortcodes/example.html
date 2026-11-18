@@ -1,0 +1,6 @@
+{{- $app := .Page.Params.app -}}
+<div class="viewer">
+  <iframe src="{{ printf "app/%s.html" $app | relURL }}" title="{{ .Page.Title }}" loading="lazy"
+          allow="cross-origin-isolated; fullscreen"></iframe>
+  <a href="{{ printf "app/%s.html" $app | relURL }}">open full screen ↗</a>
+</div>

@@ -12,3 +12,8 @@ python/dist/**
 python/build/**
 python/femto/__pycache__/**
 .venv
+site/public/**
+site/resources/**
+site/static/app/**
+site/static/enable-threads.js
+site/.hugo_build.lock

@@ -1,0 +1,20 @@
+{{ define "main" }}
+<article>
+  <h1>{{ .Title }}</h1>
+  {{ .Content }}
+  {{ range .Pages.ByWeight }}
+  {{ $thumb := printf "img/examples/%s.png" .Params.app }}
+  <a class="card" href="{{ .RelPermalink }}">
+    {{ if os.FileExists (printf "static/%s" $thumb) }}
+    <img src="{{ $thumb | relURL }}" alt="" loading="lazy">
+    {{ else }}
+    <div class="placeholder">{{ .Params.short | default .Title }}</div>
+    {{ end }}
+    <div>
+      <h2>{{ .Title }}</h2>
+      <p>{{ .Params.description }}</p>
+    </div>
+  </a>
+  {{ end }}
+</article>
+{{ end }}
